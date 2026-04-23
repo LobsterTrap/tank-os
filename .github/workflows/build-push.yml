@@ -16,7 +16,7 @@ concurrency:
 
 env:
   REGISTRY: quay.io
-  IMAGE_NAME: sallyom/tank-os
+  IMAGE_NAME: redhat-et/tank-os
 
 jobs:
   build:
