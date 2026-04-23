@@ -1,0 +1,256 @@
+name: Build and push bootc image
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: quay.io
+  IMAGE_NAME: sallyom/tank-os
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux/arm64, linux/amd64]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Build image
+        id: build
+        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2.13
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ github.sha }}
+          platforms: ${{ matrix.platform }}
+          containerfiles: bootc/Containerfile
+          context: bootc
+
+      - name: Push per-arch image to quay.io
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2.8
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ github.sha }}-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Log in to quay.io
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Pull amd64 image
+        run: podman pull "${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-amd64"
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+
+      - name: Validate image layout
+        shell: bash {0}
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-amd64"
+          failures=0
+
+          check() {
+            local desc="$1"; shift
+            if podman run --rm --entrypoint "" "$IMAGE" bash -c "$*" >/dev/null 2>&1; then
+              printf '  PASS  %s\n' "$desc"
+            else
+              printf '  FAIL  %s\n' "$desc"
+              failures=$((failures + 1))
+            fi
+          }
+
+          echo "── File layout ──"
+          check "openclaw wrapper exists and is executable" \
+            'test -x /usr/local/bin/openclaw'
+          check "tank-openclaw-secrets exists and is executable" \
+            'test -x /usr/local/bin/tank-openclaw-secrets'
+          check "tank-os-version exists and is executable" \
+            'test -x /usr/local/bin/tank-os-version'
+          check "bootstrap-openclaw exists and is executable" \
+            'test -x /usr/libexec/tank-os/bootstrap-openclaw'
+          check "bootstrap-service-gator exists and is executable" \
+            'test -x /usr/libexec/tank-os/bootstrap-service-gator'
+          check "sync-podman-secrets exists and is executable" \
+            'test -x /usr/libexec/tank-os/sync-podman-secrets'
+          check "openclaw.container quadlet exists" \
+            'test -f /etc/containers/systemd/users/1000/openclaw.container'
+          check "service-gator.container quadlet exists" \
+            'test -f /etc/containers/systemd/users/1000/service-gator.container'
+          check "sudoers.d/openclaw exists with mode 0440" \
+            '[ "$(stat -c %a /etc/sudoers.d/openclaw)" = "440" ]'
+          check "tank-os-release exists" \
+            'test -f /etc/tank-os-release'
+
+          echo ""
+          echo "── User and system config ──"
+          check "openclaw user exists with UID 1000" \
+            '[ "$(id -u openclaw)" = "1000" ]'
+          check "openclaw is in wheel group" \
+            'id -nG openclaw | grep -qw wheel'
+          check "openclaw home directory exists" \
+            'test -d /var/home/openclaw/.openclaw'
+          check "linger enabled for openclaw" \
+            'test -f /var/lib/systemd/linger/openclaw'
+          check "subuid entry for openclaw" \
+            'grep -q "^openclaw:" /etc/subuid'
+          check "subgid entry for openclaw" \
+            'grep -q "^openclaw:" /etc/subgid'
+          check "python3 is available" \
+            'command -v python3'
+
+          echo ""
+          if [ "$failures" -gt 0 ]; then
+            echo "FAILED: $failures check(s) failed"
+            exit 1
+          fi
+          echo "All layout checks passed"
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+
+      - name: Generate OpenClaw bootstrap config
+        run: |
+          OPENCLAW_HOME="${RUNNER_TEMP}/openclaw-home"
+          mkdir -p "$OPENCLAW_HOME"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-amd64"
+          podman run --rm --entrypoint "" \
+            -e HOME=/var/home/openclaw \
+            -v "$OPENCLAW_HOME:/var/home/openclaw/.openclaw" \
+            "$IMAGE" \
+            /usr/libexec/tank-os/bootstrap-openclaw
+          podman unshare chown -R 1000:1000 "$OPENCLAW_HOME"
+          echo "Generated config:"
+          cat "$OPENCLAW_HOME/openclaw.json"
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: Start OpenClaw container
+        run: |
+          podman run -d \
+            --name openclaw-smoke \
+            --init \
+            -v "${RUNNER_TEMP}/openclaw-home:/home/node/.openclaw" \
+            -e HOME=/home/node \
+            -e TERM=xterm-256color \
+            -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
+            -e OPENCLAW_NO_RESPAWN=1 \
+            -p 18789:18789 \
+            -p 18790:18790 \
+            ghcr.io/openclaw/openclaw:latest \
+            node dist/index.js gateway --allow-unconfigured --bind lan --port 18789
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: Wait for OpenClaw to be ready
+        run: |
+          echo "Waiting for OpenClaw gateway on port 18789 ..."
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:18789/ 2>/dev/null; then
+              echo "OpenClaw is responding (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Timed out waiting for OpenClaw after 60s"
+              echo "── container logs ──"
+              podman logs openclaw-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Validate OpenClaw is running
+        run: |
+          echo "── HTTP response ──"
+          http_status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18789/)
+          echo "GET / returned HTTP $http_status"
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 400 ]; then
+            echo "Unexpected HTTP status"
+            podman logs openclaw-smoke
+            exit 1
+          fi
+
+          echo ""
+          echo "── Container state ──"
+          podman inspect --format '{{.State.Status}}' openclaw-smoke
+          is_running=$(podman inspect --format '{{.State.Running}}' openclaw-smoke)
+          if [ "$is_running" != "true" ]; then
+            echo "Container is not running"
+            podman logs openclaw-smoke
+            exit 1
+          fi
+
+          echo ""
+          echo "── podman ps ──"
+          podman ps --filter name=openclaw-smoke
+
+          echo ""
+          echo "All application checks passed"
+
+      - name: Cleanup
+        if: always()
+        run: podman rm -f openclaw-smoke 2>/dev/null || true
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: [build, smoke-test]
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+
+      - name: Log in to quay.io
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          podman manifest create "${FULL_IMAGE}:${MANIFEST_TAG}"
+          podman manifest add "${FULL_IMAGE}:${MANIFEST_TAG}" "docker://${FULL_IMAGE}:${COMMIT_SHA}-arm64"
+          podman manifest add "${FULL_IMAGE}:${MANIFEST_TAG}" "docker://${FULL_IMAGE}:${COMMIT_SHA}-amd64"
+          podman manifest push "${FULL_IMAGE}:${MANIFEST_TAG}" "docker://${FULL_IMAGE}:${MANIFEST_TAG}"
+        env:
+          MANIFEST_TAG: ${{ steps.tag.outputs.tag }}
+          COMMIT_SHA: ${{ github.sha }}
+
+      - name: Clean up per-arch tags
+        run: |
+          for arch in arm64 amd64; do
+            skopeo delete "docker://${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-${arch}" || true
+          done
+        env:
+          COMMIT_SHA: ${{ github.sha }}
