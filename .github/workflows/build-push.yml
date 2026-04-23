@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -21,6 +21,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       matrix:
         platform: [linux/arm64, linux/amd64]
@@ -51,6 +52,7 @@ jobs:
 
   smoke-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: build
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -216,6 +218,7 @@ jobs:
 
   manifest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [build, smoke-test]
     steps:
       - name: Determine tag
