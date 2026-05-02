@@ -20,23 +20,26 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
     strategy:
       matrix:
-        platform: [linux/arm64, linux/amd64]
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Build image
         id: build
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2.13
         with:
           image: ${{ env.IMAGE_NAME }}
-          tags: ${{ github.sha }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
           platforms: ${{ matrix.platform }}
           containerfiles: bootc/Containerfile
           context: bootc
@@ -45,7 +48,7 @@ jobs:
         uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2.8
         with:
           image: ${{ env.IMAGE_NAME }}
-          tags: ${{ github.sha }}-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
@@ -248,12 +251,4 @@ jobs:
           podman manifest push "${FULL_IMAGE}:${MANIFEST_TAG}" "docker://${FULL_IMAGE}:${MANIFEST_TAG}"
         env:
           MANIFEST_TAG: ${{ steps.tag.outputs.tag }}
-          COMMIT_SHA: ${{ github.sha }}
-
-      - name: Clean up per-arch tags
-        run: |
-          for arch in arm64 amd64; do
-            skopeo delete "docker://${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-${arch}" || true
-          done
-        env:
           COMMIT_SHA: ${{ github.sha }}
