@@ -5,7 +5,6 @@ on:
     branches: [main]
   schedule:
     - cron: "0 6 * * *"   # 06:00 UTC daily
-  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -153,21 +152,40 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           RUNNER_TEMP: ${{ runner.temp }}
 
-      - name: Start OpenClaw container
+      - name: Start OpenClaw container from quadlet
         run: |
-          podman run -d \
-            --name openclaw-smoke \
-            --init \
-            -v "${RUNNER_TEMP}/openclaw-home:/home/node/.openclaw" \
-            -e HOME=/home/node \
-            -e TERM=xterm-256color \
-            -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
-            -e OPENCLAW_NO_RESPAWN=1 \
-            -p 18789:18789 \
-            -p 18790:18790 \
-            ghcr.io/openclaw/openclaw:latest \
-            node dist/index.js gateway --allow-unconfigured --bind lan --port 18789
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${COMMIT_SHA}-amd64"
+          QUADLET_PATH="/etc/containers/systemd/users/1000/openclaw.container"
+          QUADLET=$(podman run --rm --entrypoint "" "$IMAGE" cat "$QUADLET_PATH")
+
+          OC_IMAGE=$(echo "$QUADLET" | grep '^Image=' | cut -d= -f2-)
+
+          ARGS="--name openclaw-smoke -d"
+
+          if echo "$QUADLET" | grep -q '^RunInit=true'; then
+            ARGS="$ARGS --init"
+          fi
+
+          while IFS= read -r line; do
+            ARGS="$ARGS -e ${line#Environment=}"
+          done < <(echo "$QUADLET" | grep '^Environment=')
+
+          while IFS= read -r line; do
+            ARGS="$ARGS -p ${line#PublishPort=}"
+          done < <(echo "$QUADLET" | grep '^PublishPort=')
+
+          VOL_DEST=$(echo "$QUADLET" | grep '^Volume=' | cut -d: -f2)
+          ARGS="$ARGS -v ${RUNNER_TEMP}/openclaw-home:${VOL_DEST}"
+
+          EXEC_CMD=$(echo "$QUADLET" | grep '^Exec=' | sed 's/^Exec=//')
+
+          echo "Parsed from quadlet:"
+          echo "  Image: $OC_IMAGE"
+          echo "  Exec:  $EXEC_CMD"
+          echo "Running: podman run $ARGS $OC_IMAGE $EXEC_CMD"
+          podman run $ARGS "$OC_IMAGE" $EXEC_CMD
         env:
+          COMMIT_SHA: ${{ github.sha }}
           RUNNER_TEMP: ${{ runner.temp }}
 
       - name: Wait for OpenClaw to be ready
