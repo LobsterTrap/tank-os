@@ -94,6 +94,17 @@ Optionally create a bootc-image-builder config to inject a local SSH key. This
 is convenient for local VM tests. Do not put private keys or long-lived secrets
 here.
 
+See [examples/bootc-config.json](../examples/bootc-config.json) for a complete template.
+Copy and customize it:
+
+```bash
+cp examples/bootc-config.json out-tank-os/config.json
+# Edit with your SSH public key:
+sed -i 's/REPLACE_WITH_YOUR_PUBLIC_KEY/ssh-ed25519 AAAA.../' out-tank-os/config.json
+```
+
+Or create inline:
+
 ```bash
 cat > out-tank-os/config.json <<'EOF'
 {
@@ -161,6 +172,50 @@ On boot, OpenClaw state lives at:
 ```
 
 When logged in as `openclaw`, that is `~/.openclaw`.
+
+## Launch on Linux (QEMU)
+
+Use the provided launch script for portable QEMU invocation with automatic KVM 
+detection and TCG fallback:
+
+```bash
+chmod +x examples/boot-tank-os-qemu.sh
+./examples/boot-tank-os-qemu.sh out-tank-os
+```
+
+The script:
+
+- Detects KVM availability and falls back to TCG if unavailable
+- Auto-locates OVMF firmware files (`/usr/share/OVMF/`, `/usr/share/ovmf/`, etc.)
+- Prepares OVMF variables for write access
+- Forwards SSH port to localhost:2222
+
+**Manual QEMU invocation** (if you prefer):
+
+```bash
+# Check for /dev/kvm; if unavailable, use accel=tcg
+ACCEL="kvm"
+[[ -e /dev/kvm ]] || ACCEL="tcg"
+
+qemu-system-x86_64 \
+  -machine q35,accel="$ACCEL" \
+  -cpu max \
+  -smp 2 \
+  -m 4096 \
+  -drive file=out-tank-os/qcow2/disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=out-tank-os/qcow2/OVMF_VARS_4M.fd \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -nographic
+```
+
+**Note**: OVMF paths vary by distribution. Common locations:
+- `/usr/share/OVMF/OVMF_CODE_4M.fd` (Red Hat, Fedora, openSUSE)
+- `/usr/share/ovmf/OVMF.fd` (Debian, Ubuntu)
+- `/usr/share/edk2-ovmf/OVMF_CODE.fd` (Arch)
+
+The `_4M` variant is preferred for modern systems; fall back to standard paths if unavailable.
 
 ## Upgrade A Running VM
 
