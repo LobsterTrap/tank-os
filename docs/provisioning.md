@@ -34,6 +34,24 @@ openclaw status --deep
 The `openclaw` command on the host delegates to the running OpenClaw container.
 See [cli.md](cli.md) for the wrapper behavior and multi-instance notes.
 
+### First Boot: Image Pull Timeout
+
+The OpenClaw gateway container (`ghcr.io/openclaw/openclaw:latest`) is ~900MB. 
+On first boot, systemd starts the service while pulling the image. If the pull 
+takes longer than the default 5-minute timeout, the service fails.
+
+**Workaround**: Pre-pull the image before or after first boot:
+
+```bash
+ssh openclaw@<host>
+sudo -iu openclaw
+podman pull ghcr.io/openclaw/openclaw:latest
+systemctl --user restart openclaw.service
+```
+
+Once cached, subsequent restarts are instant. Alternatively, increase the systemd 
+timeout in the image customization (future PR).
+
 ## EC2
 
 Use the cloud-init YAML as EC2 user data. Replace the public key placeholder before launch.
