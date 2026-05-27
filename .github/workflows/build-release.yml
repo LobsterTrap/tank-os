@@ -146,14 +146,26 @@ jobs:
         IMAGE_URI="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE }}"
         buildah manifest inspect ${IMAGE_URI}:latest
 
+    - name: Check signing secrets
+      id: check_signing
+      env:
+        COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      run: |
+        if [ -n "$COSIGN_PRIVATE_KEY" ] && [ -n "$COSIGN_PASSWORD" ]; then
+          echo "available=true" >> $GITHUB_OUTPUT
+        else
+          echo "available=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Install Cosign
-      if: ${{ env.COSIGN_PUBLIC_KEY != '' }}
+      if: ${{ env.COSIGN_PUBLIC_KEY != '' && steps.check_signing.outputs.available == 'true' }}
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       with:
         cosign-release: 'v2.2.4'
 
     - name: Sign image recursively
-      if: ${{ env.COSIGN_PUBLIC_KEY != '' }}
+      if: ${{ env.COSIGN_PUBLIC_KEY != '' && steps.check_signing.outputs.available == 'true' }}
       env:
         COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
         COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -172,7 +184,7 @@ jobs:
           ${IMAGE_URI}:latest
 
     - name: Verify image signature
-      if: ${{ env.COSIGN_PUBLIC_KEY != '' }}
+      if: ${{ env.COSIGN_PUBLIC_KEY != '' && steps.check_signing.outputs.available == 'true' }}
       run: |
         IMAGE_URI="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE }}"
         echo "${{ env.COSIGN_PUBLIC_KEY }}" > /tmp/cosign.pub
@@ -181,7 +193,7 @@ jobs:
           ${IMAGE_URI}:latest
 
     - name: Cleanup signing keys
-      if: always()
+      if: ${{ always() && steps.check_signing.outputs.available == 'true' }}
       run: |
         # Remove public key file if it exists
         rm -f /tmp/cosign.pub

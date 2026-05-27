@@ -109,10 +109,10 @@ build-iso:
 
 .PHONY: lint
 lint:
-	@if command -v bootc >/dev/null 2>&1; then \
+	@if command -v podman >/dev/null 2>&1; then \
 		podman run --rm $(IMAGE_URI):latest bootc container lint; \
 	else \
-		echo "bootc command not found, skipping lint"; \
+		echo "podman command not found, skipping lint"; \
 	fi
 
 .PHONY: verify
