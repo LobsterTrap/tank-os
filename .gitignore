@@ -5,5 +5,8 @@
 *.img
 *.zst
 /.tmp/
-out-tank-os/
+/out-tank-os/
 .playwright-mcp/
+prompt.md
+cosign.key
+cosign.pub

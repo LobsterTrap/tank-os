@@ -1,0 +1,47 @@
+name: PR Build Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+    - name: Prepare platform pair
+      run: |
+        platform=${{ matrix.platform }}
+        echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+
+    - name: Checkout repository
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Build Image
+      id: build-image
+      uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+      with:
+        image: localhost/tank-os
+        tags: ${{ env.PLATFORM_PAIR }}-${{ github.sha }}
+        context: bootc
+        containerfiles: |
+          bootc/Containerfile
+
+    - name: Validate image
+      run: |
+        buildah inspect localhost/tank-os:${{ env.PLATFORM_PAIR }}-${{ github.sha }}
