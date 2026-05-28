@@ -6,6 +6,7 @@
 *.zst
 /.tmp/
 /out-tank-os/
+/config.toml
 .playwright-mcp/
 prompt.md
 cosign.key

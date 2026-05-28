@@ -1,18 +1,16 @@
 # Build
 
-## Quick Start with Makefile
+## Quick Start
 
-The easiest way to build locally is using `make`:
+The local build commands are exposed through the repo `Makefile`:
 
 ```bash
-# Build the image (auto-detects architecture)
+# Build the bootc container image for your local architecture
 make build
 
-# View all available targets
+# View all available targets and the active image configuration
 make help
 ```
-
-See **Makefile Targets** below for details.
 
 ## Build The Bootc Container Image
 
@@ -40,30 +38,19 @@ tank-os/
 For Apple Silicon:
 
 ```bash
-podman build \
-  --platform linux/arm64 \
-  -t localhost/tank-os:latest \
-  -f bootc/Containerfile \
-  bootc
+make build ARCH=arm64
 ```
 
 For x86_64:
 
 ```bash
-podman build \
-  --platform linux/amd64 \
-  -t localhost/tank-os:latest \
-  -f bootc/Containerfile \
-  bootc
+make build ARCH=amd64
 ```
 
 The default base is `quay.io/fedora/fedora-bootc:latest`. For a pinned build:
 
 ```bash
-podman build \
-  --build-arg FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:<tag> \
-  -t localhost/tank-os:<tag> \
-  -f bootc/Containerfile bootc
+make build FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:<tag>
 ```
 
 ## Build A Disk Image With Podman Desktop
@@ -96,62 +83,36 @@ See:
 - bootc-image-builder docs: https://osbuild.org/docs/bootc/
 - bootc docs: https://bootc-dev.github.io/bootc/
 
-## Build A Disk Image Manually
+## Build A Disk Image With Make
 
-Create an output directory:
-
-```bash
-mkdir -p out-tank-os
-```
-
-Optionally create a bootc-image-builder config to inject a local SSH key. This
-is convenient for local VM tests. Do not put private keys or long-lived secrets
-here.
+Create a bootc-image-builder config in the repo root. This is convenient for
+local VM tests. Do not put private keys or long-lived secrets here.
 
 ```bash
-cat > out-tank-os/config.json <<'EOF'
-{
-  "customizations": {
-    "user": [
-      {
-        "name": "openclaw",
-        "key": "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-os",
-        "groups": ["wheel"]
-      }
-    ]
-  }
-}
+cat > config.toml <<'EOF'
+[[customizations.user]]
+name = "openclaw"
+key = "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-os"
+groups = ["wheel"]
 EOF
 ```
 
-Build the QCOW2 with bootc-image-builder. On macOS with Podman Desktop, use the
-rootful Podman machine connection because bootc-image-builder needs privileged
-access to the container storage.
+Build the QCOW2 image:
 
 ```bash
-podman --connection podman-machine-default-root run \
-  --rm \
-  --name tank-os-bootc-image-builder \
-  --tty \
-  --privileged \
-  --security-opt label=type:unconfined_t \
-  -v "$PWD/out-tank-os:/output/" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  -v "$PWD/out-tank-os/config.json:/config.json:ro" \
-  quay.io/centos-bootc/bootc-image-builder:latest \
-  localhost/tank-os:latest \
-  --output /output/ \
-  --local \
-  --progress verbose \
-  --type qcow2 \
-  --target-arch arm64 \
-  --rootfs xfs
+make build-qcow2
+```
+
+Build an installer ISO:
+
+```bash
+make build-iso
 ```
 
 For x86_64 output, use:
 
 ```bash
---target-arch amd64
+make build-qcow2 ARCH=amd64
 ```
 
 The resulting disk image is:
@@ -159,6 +120,37 @@ The resulting disk image is:
 ```text
 out-tank-os/qcow2/disk.qcow2
 ```
+
+On macOS with Podman Desktop, use the rootful Podman machine connection because
+bootc-image-builder needs privileged access to the container storage.
+
+## Makefile Targets
+
+Common targets:
+
+```bash
+# Build the image locally
+make build
+
+# Build and push to a registry
+make build push IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=myorg
+
+# Build disk images using config.toml
+make build-qcow2
+make build-iso
+
+# Verify a signed registry image
+make verify COSIGN_PUBLIC_KEY="$(cat cosign.pub)" \
+  IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=myorg
+
+# Remove build artifacts
+make clean
+```
+
+Images are tagged as `localhost/tank-os:latest` by default, or
+`<REGISTRY>/<NAMESPACE>/tank-os:latest` when `IMAGE_REGISTRY` and
+`IMAGE_NAMESPACE` are set. Authentication credentials are handled separately
+with `podman login` before `make push`.
 
 ## What The Image Installs
 
@@ -190,35 +182,6 @@ After the reboot, future updates against the same tracked tag can use:
 ```bash
 sudo bootc upgrade --apply
 ```
-
-## Makefile Targets
-
-The `Makefile` provides convenient local build commands:
-
-```bash
-# Build the image locally (auto-detects architecture)
-make build
-
-# Build and push to a registry (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)
-make build push IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=myorg
-
-# Build a QCOW2 disk image (requires config.toml in repo root)
-make build-qcow2
-
-# Build an ISO installer (requires config.toml in repo root)
-make build-iso
-
-# Verify image signature (if COSIGN_PUBLIC_KEY env var is set)
-make verify COSIGN_PUBLIC_KEY="$(cat cosign.pub)" \
-  IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=myorg
-
-# Clean build artifacts
-make clean
-```
-
-The Makefile automatically detects your architecture (`arm64` or `amd64`) and builds for that platform. Images are tagged as `localhost/tank-os:latest` by default, or `<REGISTRY>/<NAMESPACE>/tank-os:latest` if registry variables are set.
-
-**Note**: The Makefile uses `IMAGE_NAMESPACE` for the image path. Authentication credentials are handled separately via `podman login` before running `make push`.
 
 ## CI/CD System
 

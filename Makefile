@@ -4,6 +4,7 @@
 IMAGE_REGISTRY ?=
 IMAGE_NAMESPACE ?=
 IMAGE := tank-os
+FEDORA_BOOTC_BASE ?=
 
 # Auto-detect architecture
 UNAME_ARCH := $(shell uname -m)
@@ -30,6 +31,10 @@ endif
 
 PLATFORM := linux/$(ARCH)
 
+ifneq ($(FEDORA_BOOTC_BASE),)
+  BUILD_ARGS := --build-arg FEDORA_BOOTC_BASE=$(FEDORA_BOOTC_BASE)
+endif
+
 .PHONY: help
 help:
 	@echo "tank-os Makefile"
@@ -49,10 +54,11 @@ help:
 	@echo "  IMAGE_URI:       $(IMAGE_URI)"
 	@echo "  IMAGE_REGISTRY:  $(IMAGE_REGISTRY)"
 	@echo "  IMAGE_NAMESPACE: $(IMAGE_NAMESPACE)"
+	@echo "  FEDORA_BOOTC_BASE: $(FEDORA_BOOTC_BASE)"
 
 .PHONY: build
 build:
-	podman build --platform $(PLATFORM) -t $(IMAGE_URI):latest -f bootc/Containerfile bootc
+	podman build --platform $(PLATFORM) $(BUILD_ARGS) -t $(IMAGE_URI):latest -f bootc/Containerfile bootc
 
 .PHONY: push
 push:

@@ -1,0 +1,7 @@
+[tool.semantic_release]
+allow_zero_version = true
+commit_parser = "conventional"
+tag_format = "v{version}"
+version_variables = [
+  "VERSION:*:nf",
+]
