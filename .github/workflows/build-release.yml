@@ -263,7 +263,7 @@ jobs:
         push-to-registry: true
 
     - name: Attest SBOM
-      uses: actions/attest-sbom@1455967b1b6415d3df9fac31a87500523f7b455c # v2.0.0
+      uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
       with:
         subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE }}
         subject-digest: ${{ needs.merge.outputs.digest }}
