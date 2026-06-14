@@ -1,0 +1,38 @@
+name: Lint PR Title
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - synchronize
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  lint:
+    permissions:
+      contents: read
+    if: ${{ github.head_ref != 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Harden runner
+      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      with:
+        egress-policy: audit
+
+    - name: Checkout base branch
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        persist-credentials: false
+
+    - name: Install dependencies
+      run: npm install @commitlint/cli @commitlint/config-conventional
+
+    - name: Validate PR title
+      run: |
+        PR_TITLE=$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")
+        echo "$PR_TITLE" | npx commitlint --config commitlint.config.js

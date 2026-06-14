@@ -17,6 +17,7 @@ RUN set -eux; \
       openssh-server \
       podman \
       python3 \
+      qemu-guest-agent \
       shadow-utils \
       sudo \
       vim-enhanced; \
