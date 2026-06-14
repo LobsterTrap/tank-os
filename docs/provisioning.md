@@ -25,6 +25,8 @@ runcmd:
 
 After boot:
 
+`ssh openclaw@<host>` and [configure the Gateway token.](provisioning.md#gateway-token-setup)
+
 ```bash
 ssh openclaw@<host>
 cd ~/.openclaw
@@ -222,7 +224,24 @@ systemctl --user restart openclaw.service
 
 ## Podman Secrets
 
-Create Podman secrets in the `openclaw` user's rootless store:
+Create Podman secrets in the `openclaw` user's rootless store and inject them into the OpenClaw container.
+
+### Gateway Token Setup
+
+Execute the following commands to create the Openclaw Gateway Token:
+
+```bash
+sudo -iu openclaw
+printf '%s' "$OPENCLAW_GATEWAY_TOKEN" | podman secret create openclaw_gateway_token -
+tank-openclaw-secrets
+systemctl --user restart openclaw.service
+```
+
+The `openclaw_gateway_token` Podman secret is injected into the OpenClaw container as `OPENCLAW_GATEWAY_TOKEN`, which satisfies gateway token auth without storing the token in `openclaw.json`.
+
+### API Key Setup
+
+Execute the following commands to create secrets for Anthropic and OpenAI keys:
 
 ```bash
 sudo -iu openclaw
@@ -230,7 +249,9 @@ printf '%s' "$ANTHROPIC_API_KEY" | podman secret create anthropic_api_key -
 printf '%s' "$OPENAI_API_KEY" | podman secret create openai_api_key -
 ```
 
-Then sync the generated Quadlet drop-ins and OpenClaw SecretRefs:
+### Applying Secrets
+
+Sync the generated Quadlet drop-ins and OpenClaw SecretRefs:
 
 ```bash
 tank-openclaw-secrets
