@@ -3,6 +3,7 @@ set -euo pipefail
 
 openclaw_home="${HOME:-/var/home/openclaw}/.openclaw"
 config_file="$openclaw_home/openclaw.json"
+env_file="$openclaw_home/openclaw.env"
 
 umask 077
 mkdir -p \
@@ -12,12 +13,18 @@ mkdir -p \
   "$openclaw_home/cron"
 
 if [[ ! -f "$config_file" ]]; then
-  cat >"$config_file" <<'JSON'
+  # `--bind lan` (below) refuses to start without a gateway auth token; a
+  # fresh VM has none, so generate one here the same way SSH host keys are
+  # generated on first boot instead of leaving the service crash-looping.
+  gateway_token="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+  cat >"$config_file" <<JSON
 {
   "gateway": {
     "mode": "local",
     "auth": {
-      "mode": "token"
+      "mode": "token",
+      "token": "$gateway_token"
     },
     "http": {
       "endpoints": {
@@ -36,7 +43,33 @@ if [[ ! -f "$config_file" ]]; then
         "http://localhost:18789"
       ]
     }
+  },
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "mode": "all",
+        "backend": "openshell",
+        "scope": "session",
+        "workspaceAccess": "rw"
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "openshell": {
+        "enabled": true,
+        "config": {
+          "from": "tank-os-openclaw-sandbox",
+          "mode": "remote"
+        }
+      }
+    }
   }
 }
 JSON
+
+  cat >"$env_file" <<ENV
+OPENCLAW_GATEWAY_TOKEN=$gateway_token
+ENV
+  chmod 0600 "$config_file" "$env_file"
 fi

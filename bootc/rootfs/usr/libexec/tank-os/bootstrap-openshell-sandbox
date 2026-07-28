@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Runs as an ExecStartPre for openclaw.container, before the OpenClaw
+# gateway container itself starts. Two jobs, both idempotent:
+#
+# 1. Install the openshell plugin into the persisted ~/.openclaw volume.
+#    openclaw.json (written by bootstrap-openclaw) already enables
+#    plugins.entries.openshell and agents.defaults.sandbox.backend, so the
+#    plugin must exist in the volume *before* the gateway's first start --
+#    otherwise it starts referencing a plugin that isn't there yet. The
+#    plugin can't be installed via `openclaw plugins install` through the
+#    normal container (that requires the container to already be running,
+#    see /usr/local/bin/openclaw), so this uses a one-shot throwaway
+#    container against the same image instead.
+# 2. Pre-create the OpenShell sandbox under a fixed name, using the
+#    OpenShell gateway that already runs on this host (see
+#    openshell-gateway.service). OpenClaw's plugin then finds it via
+#    `sandbox get <name>` and never needs to invoke `sandbox create`
+#    itself, which sidesteps plugins.entries.openshell.config.from only
+#    documented to accept a bare short name, not a full image reference.
+
+openclaw_image="${OPENCLAW_OPENSHELL_IMAGE:-localhost/tank-os-openclaw-openshell:latest}"
+openclaw_home="${HOME:-/var/home/openclaw}/.openclaw"
+sandbox_name="tank-os-openclaw-sandbox"
+sandbox_source="ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw@sha256:59f4856662cd6923c71c983fe6a6dade0ae939e5aa7361912e6e7134913c5205"
+
+if ! find "$openclaw_home/npm/projects" -maxdepth 1 -iname '*openshell*' 2>/dev/null | grep -q .; then
+  podman run --rm \
+    --userns=keep-id \
+    -v "$openclaw_home:/home/node/.openclaw:Z" \
+    -e HOME=/home/node \
+    "$openclaw_image" \
+    openclaw plugins install @openclaw/openshell-sandbox
+fi
+
+for _ in $(seq 1 30); do
+  systemctl --user is-active --quiet openshell-gateway.service && break
+  sleep 1
+done
+
+if ! openshell sandbox get "$sandbox_name" >/dev/null 2>&1; then
+  openshell sandbox create \
+    --name "$sandbox_name" \
+    --from "$sandbox_source"
+fi

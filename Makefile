@@ -4,7 +4,9 @@
 IMAGE_REGISTRY ?=
 IMAGE_NAMESPACE ?=
 IMAGE := tank-os
+IMAGE_OPENCLAW_OPENSHELL := tank-os-openclaw-openshell
 FEDORA_BOOTC_BASE ?=
+OPENCLAW_REF ?= 2026.7.1
 
 # Auto-detect architecture
 UNAME_ARCH := $(shell uname -m)
@@ -22,17 +24,22 @@ endif
 ifneq ($(IMAGE_REGISTRY),)
   ifneq ($(IMAGE_NAMESPACE),)
     IMAGE_URI := $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE)
+    IMAGE_OPENCLAW_OPENSHELL_URI := $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE_OPENCLAW_OPENSHELL)
   else
     IMAGE_URI := localhost/$(IMAGE)
+    IMAGE_OPENCLAW_OPENSHELL_URI := localhost/$(IMAGE_OPENCLAW_OPENSHELL)
   endif
 else
   IMAGE_URI := localhost/$(IMAGE)
+  IMAGE_OPENCLAW_OPENSHELL_URI := localhost/$(IMAGE_OPENCLAW_OPENSHELL)
 endif
 
 PLATFORM := linux/$(ARCH)
 
+BUILD_ARGS := --build-arg OPENCLAW_REF=$(OPENCLAW_REF) \
+  --build-arg OPENCLAW_OPENSHELL_IMAGE=$(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF)
 ifneq ($(FEDORA_BOOTC_BASE),)
-  BUILD_ARGS := --build-arg FEDORA_BOOTC_BASE=$(FEDORA_BOOTC_BASE)
+  BUILD_ARGS += --build-arg FEDORA_BOOTC_BASE=$(FEDORA_BOOTC_BASE)
 endif
 
 .PHONY: help
@@ -40,6 +47,8 @@ help:
 	@echo "tank-os Makefile"
 	@echo ""
 	@echo "Common targets:"
+	@echo "  build-openclaw-openshell  Build the derived OpenClaw+openshell image (build this FIRST)"
+	@echo "  push-openclaw-openshell   Push it (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)"
 	@echo "  build          Build the bootc container image locally"
 	@echo "  push           Push the image to registry (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)"
 	@echo "  build-qcow2    Build a QCOW2 disk image using bootc-image-builder"
@@ -52,6 +61,8 @@ help:
 	@echo "  ARCH:            $(ARCH)"
 	@echo "  PLATFORM:        $(PLATFORM)"
 	@echo "  IMAGE_URI:       $(IMAGE_URI)"
+	@echo "  IMAGE_OPENCLAW_OPENSHELL_URI: $(IMAGE_OPENCLAW_OPENSHELL_URI)"
+	@echo "  OPENCLAW_REF:    $(OPENCLAW_REF)"
 	@echo "  IMAGE_REGISTRY:  $(IMAGE_REGISTRY)"
 	@echo "  IMAGE_NAMESPACE: $(IMAGE_NAMESPACE)"
 	@echo "  FEDORA_BOOTC_BASE: $(FEDORA_BOOTC_BASE)"
@@ -68,6 +79,27 @@ push:
 		exit 1; \
 	fi
 	podman push $(IMAGE_URI):latest
+
+# Derived OpenClaw image (OpenClaw + openssh-client + the openshell CLI --
+# see bootc/openclaw-openshell/Containerfile). Build and push this BEFORE
+# `build`/`push` above: the main tank-os image's Quadlet unit references
+# it by the tag computed here (IMAGE_OPENCLAW_OPENSHELL_URI:OPENCLAW_REF).
+.PHONY: build-openclaw-openshell
+build-openclaw-openshell:
+	podman build --platform $(PLATFORM) \
+		--build-arg OPENCLAW_REF=$(OPENCLAW_REF) \
+		--build-arg TARGETARCH=$(ARCH) \
+		-t $(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF) \
+		-f bootc/openclaw-openshell/Containerfile bootc/openclaw-openshell
+
+.PHONY: push-openclaw-openshell
+push-openclaw-openshell:
+	@if [ -z "$(IMAGE_REGISTRY)" ] || [ -z "$(IMAGE_NAMESPACE)" ]; then \
+		echo "Error: IMAGE_REGISTRY and IMAGE_NAMESPACE must be set to push images"; \
+		echo "Example: make push-openclaw-openshell IMAGE_REGISTRY=ghcr.io IMAGE_NAMESPACE=lobstertrap"; \
+		exit 1; \
+	fi
+	podman push $(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF)
 
 .PHONY: build-qcow2
 build-qcow2:

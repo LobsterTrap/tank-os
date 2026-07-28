@@ -11,6 +11,22 @@ ARG OPENCLAW_GID=1000
 ARG OPENCLAW_SUBID_START=100000
 ARG OPENCLAW_SUBID_COUNT=65536
 
+# Pinned to a tagged release, not `main`/`latest` -- see
+# claw-tank-hummingbird/verification-findings.md item 4 for why this
+# specific version (fixes CVE-2026-27002 and the related sandbox
+# bind-mount escape chain; 2026.7.2 exists but is still beta).
+ARG OPENCLAW_REF=2026.7.1
+
+# The OpenClaw container image, with the openshell CLI and an SSH client
+# layered on top (see bootc/openclaw-openshell/Containerfile). Published
+# separately by this repo's own release pipeline -- override at build time
+# once that pipeline exists (e.g. ghcr.io/lobstertrap/tank-os-openclaw-openshell:<tag>).
+ARG OPENCLAW_OPENSHELL_IMAGE=localhost/tank-os-openclaw-openshell:latest
+
+# OpenShell CLI + gateway RPMs, pinned to a tagged release for the same
+# reason as OPENCLAW_REF above.
+ARG OPENSHELL_VERSION=0.0.92
+
 RUN set -eux; \
     dnf -y install \
       cloud-init \
@@ -21,6 +37,10 @@ RUN set -eux; \
       shadow-utils \
       sudo \
       vim-enhanced; \
+    arch="$(rpm -E %{_arch})"; \
+    dnf -y install \
+      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm" \
+      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-gateway-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm"; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*; \
     getent group openclaw >/dev/null || groupadd -g "${OPENCLAW_GID}" openclaw; \
@@ -44,10 +64,16 @@ RUN set -eux; \
       /usr/local/bin/tank-openclaw-secrets \
       /usr/libexec/tank-os/bootstrap-openclaw \
       /usr/libexec/tank-os/bootstrap-service-gator \
-      /usr/libexec/tank-os/sync-podman-secrets; \
+      /usr/libexec/tank-os/sync-podman-secrets \
+      /usr/libexec/tank-os/bootstrap-openshell-sandbox; \
     chmod 0440 /etc/sudoers.d/openclaw; \
     chown -R openclaw:openclaw /var/home/openclaw; \
+    sed -i "s|Image=ghcr.io/openclaw/openclaw:.*|Image=${OPENCLAW_OPENSHELL_IMAGE}|" \
+      /etc/containers/systemd/users/1000/openclaw.container; \
     systemctl enable sshd.service; \
+    mkdir -p /etc/systemd/user/default.target.wants; \
+    ln -sf /usr/lib/systemd/user/openshell-gateway.service \
+      /etc/systemd/user/default.target.wants/openshell-gateway.service; \
     for unit in \
       cloud-init-local.service \
       cloud-init-network.service \
