@@ -28,7 +28,11 @@ set -euo pipefail
 #    itself, which sidesteps plugins.entries.openshell.config.from only
 #    documented to accept a bare short name, not a full image reference.
 
-openclaw_image="${OPENCLAW_OPENSHELL_IMAGE:-localhost/tank-os-openclaw-openshell:latest}"
+# The literal default below is rewritten at image build time (see
+# bootc/Containerfile's sed step) to match the OPENCLAW_OPENSHELL_IMAGE
+# build arg -- kept in sync with openclaw.container's Image= line, since
+# ExecStartPre scripts don't inherit container build args at runtime.
+openclaw_image="${OPENCLAW_OPENSHELL_IMAGE:-__OPENCLAW_OPENSHELL_IMAGE_DEFAULT__}"
 openclaw_home="${HOME:-/var/home/openclaw}/.openclaw"
 gateway_name="openshell"
 gateway_endpoint="https://127.0.0.1:17670"
@@ -54,7 +58,17 @@ if ! openshell gateway select "$gateway_name" >/dev/null 2>&1; then
 fi
 
 if ! openshell sandbox get "$sandbox_name" >/dev/null 2>&1; then
-  openshell sandbox create \
+  # `sandbox create`'s own foreground progress display has been observed to
+  # hang even after the sandbox is actually provisioned and healthy (alpha
+  # software -- see NVIDIA/OpenShell's own "early-stage" disclaimer). Cap it
+  # with `timeout` and treat `sandbox get` afterward as the source of
+  # truth, not `create`'s own exit status.
+  timeout 600 openshell sandbox create \
     --name "$sandbox_name" \
-    --from "$sandbox_source"
+    --from "$sandbox_source" || true
+
+  if ! openshell sandbox get "$sandbox_name" >/dev/null 2>&1; then
+    echo "bootstrap-openshell-sandbox: sandbox create failed or timed out and no sandbox exists" >&2
+    exit 1
+  fi
 fi

@@ -18,10 +18,10 @@ ARG OPENCLAW_SUBID_COUNT=65536
 ARG OPENCLAW_REF=2026.7.1
 
 # The OpenClaw container image, with the openshell CLI and an SSH client
-# layered on top (see bootc/openclaw-openshell/Containerfile). Published
-# separately by this repo's own release pipeline -- override at build time
-# once that pipeline exists (e.g. ghcr.io/lobstertrap/tank-os-openclaw-openshell:<tag>).
-ARG OPENCLAW_OPENSHELL_IMAGE=localhost/tank-os-openclaw-openshell:latest
+# layered on top (see bootc/openclaw-openshell/Containerfile). Published to
+# quay.io/redhat-et/tank-claw-openshell via `make build-openclaw-openshell
+# push-openclaw-openshell` (build/push that BEFORE building this image).
+ARG OPENCLAW_OPENSHELL_IMAGE=quay.io/redhat-et/tank-claw-openshell:2026.7.1
 
 # OpenShell CLI + gateway RPMs, pinned to a tagged release for the same
 # reason as OPENCLAW_REF above.
@@ -70,6 +70,8 @@ RUN set -eux; \
     chown -R openclaw:openclaw /var/home/openclaw; \
     sed -i "s|Image=ghcr.io/openclaw/openclaw:.*|Image=${OPENCLAW_OPENSHELL_IMAGE}|" \
       /etc/containers/systemd/users/1000/openclaw.container; \
+    sed -i "s|__OPENCLAW_OPENSHELL_IMAGE_DEFAULT__|${OPENCLAW_OPENSHELL_IMAGE}|" \
+      /usr/libexec/tank-os/bootstrap-openshell-sandbox; \
     systemctl enable sshd.service; \
     mkdir -p /etc/systemd/user/default.target.wants; \
     ln -sf /usr/lib/systemd/user/openshell-gateway.service \
