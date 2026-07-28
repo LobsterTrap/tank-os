@@ -1,0 +1,70 @@
+# KubeVirt VirtualMachine template. Per-user values (name/labels/hostname)
+# are placeholders here -- they get patched per user by the ArgoCD
+# ApplicationSet in deploy/applicationset.yaml, not edited in this file.
+# See docs/openshift-virtualization.md for how a user gets added.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: tank-USER_PLACEHOLDER
+  labels:
+    app: tank-os
+    tank-os/user: USER_PLACEHOLDER
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        app: tank-os
+        tank-os/user: USER_PLACEHOLDER
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 4Gi
+        devices:
+          disks:
+            - name: containerdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: containerdisk
+          # Placeholder tag -- IMAGE_CONTAINERDISK_URI in the Makefile is
+          # the source of truth for where this actually gets published.
+          containerDisk:
+            image: quay.io/redhat-et/tank-os-containerdisk:latest
+        # Index 1 in this list -- deploy/applicationset.yaml's JSON6902
+        # patch addresses this volume's userData by that fixed index, so
+        # keep cloudinitdisk here (position 1) if this file changes.
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            # Same shape as examples/cloud-init/openclaw-user-data.yaml
+            # (shared SSH key, same openclaw user block) with a hostname
+            # key added -- REPLACE_WITH_YOUR_PUBLIC_KEY still needs a real
+            # key before this is usable; see docs/openshift-virtualization.md.
+            userData: |
+              #cloud-config
+              hostname: tank-USER_PLACEHOLDER
+              users:
+                - name: openclaw
+                  gecos: OpenClaw
+                  groups:
+                    - wheel
+                  sudo:
+                    - ALL=(ALL) NOPASSWD:ALL
+                  shell: /bin/bash
+                  lock_passwd: true
+                  ssh_authorized_keys:
+                    - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-os
+              runcmd:
+                - [loginctl, enable-linger, openclaw]

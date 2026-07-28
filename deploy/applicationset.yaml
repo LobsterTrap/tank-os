@@ -1,0 +1,80 @@
+# ArgoCD ApplicationSet: one Application per user, each syncing the same
+# deploy/base/ Kustomize base with a per-user patch (name, labels,
+# hostname). To add a user, add one entry to the List generator below --
+# no new files, no new directories. See docs/openshift-virtualization.md.
+#
+# NOT YET DEPLOYED/TESTED against a live cluster -- see that doc's
+# "first real cluster test" checklist before relying on this.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tank-os
+  namespace: openshift-gitops
+spec:
+  generators:
+    - list:
+        elements:
+          - user: alice
+          - user: bob
+          # - user: carol
+          # ... one entry per user, up to however many you're running.
+  template:
+    metadata:
+      name: "tank-os-{{.user}}"
+    spec:
+      project: default
+      source:
+        # Update repoURL/targetRevision once this lives on a branch/tag
+        # you intend ArgoCD to track (e.g. after this PR merges to main).
+        repoURL: https://github.com/LobsterTrap/tank-os.git
+        targetRevision: main
+        path: deploy/base
+        kustomize:
+          patches:
+            - target:
+                kind: VirtualMachine
+                name: tank-USER_PLACEHOLDER
+              # JSON6902: values here can only be replaced wholesale, not
+              # edited in place, hence the cloud-init userData block is
+              # duplicated from deploy/base/virtualmachine.yaml rather than
+              # patched at the `hostname:` line -- Kustomize has no
+              # visibility into a YAML value that's itself a raw string.
+              # volumes/1 assumes cloudinitdisk stays the second volume in
+              # the base file (see the comment there).
+              patch: |-
+                - op: replace
+                  path: /metadata/name
+                  value: tank-{{.user}}
+                - op: replace
+                  path: /metadata/labels/tank-os~1user
+                  value: "{{.user}}"
+                - op: replace
+                  path: /spec/template/metadata/labels/tank-os~1user
+                  value: "{{.user}}"
+                - op: replace
+                  path: /spec/template/spec/volumes/1/cloudInitNoCloud/userData
+                  value: |
+                    #cloud-config
+                    hostname: tank-{{.user}}
+                    users:
+                      - name: openclaw
+                        gecos: OpenClaw
+                        groups:
+                          - wheel
+                        sudo:
+                          - ALL=(ALL) NOPASSWD:ALL
+                        shell: /bin/bash
+                        lock_passwd: true
+                        ssh_authorized_keys:
+                          - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-os
+                    runcmd:
+                      - [loginctl, enable-linger, openclaw]
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "tank-{{.user}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
