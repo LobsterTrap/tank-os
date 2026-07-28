@@ -18,6 +18,11 @@ OPENSHELL_VERSION ?= 0.0.92
 # a different destination (e.g. a fork's own registry).
 IMAGE_OPENCLAW_OPENSHELL_URI ?= quay.io/redhat-et/tank-claw-openshell
 
+# KubeVirt containerDisk (wraps out-tank-os/qcow2/disk.qcow2, see
+# deploy/containerdisk/Containerfile) -- override if you're publishing to
+# a different registry. This repo doesn't exist until you create it.
+IMAGE_CONTAINERDISK_URI ?= quay.io/redhat-et/tank-os-containerdisk
+
 # Auto-detect architecture
 UNAME_ARCH := $(shell uname -m)
 ifeq ($(UNAME_ARCH),x86_64)
@@ -61,6 +66,8 @@ help:
 	@echo "  build          Build the bootc container image locally"
 	@echo "  push           Push the image to registry (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)"
 	@echo "  build-qcow2    Build a QCOW2 disk image using bootc-image-builder"
+	@echo "  build-containerdisk  Wrap the qcow2 as a KubeVirt containerDisk (run build-qcow2 first)"
+	@echo "  push-containerdisk   Push it to IMAGE_CONTAINERDISK_URI"
 	@echo "  build-iso      Build an ISO installer using bootc-image-builder"
 	@echo "  lint           Run bootc container lint (if available)"
 	@echo "  verify         Verify image signature with cosign (if COSIGN_PUBLIC_KEY is set)"
@@ -71,6 +78,7 @@ help:
 	@echo "  PLATFORM:        $(PLATFORM)"
 	@echo "  IMAGE_URI:       $(IMAGE_URI)"
 	@echo "  IMAGE_OPENCLAW_OPENSHELL_URI: $(IMAGE_OPENCLAW_OPENSHELL_URI)"
+	@echo "  IMAGE_CONTAINERDISK_URI: $(IMAGE_CONTAINERDISK_URI)"
 	@echo "  OPENCLAW_REF:    $(OPENCLAW_REF)"
 	@echo "  OPENSHELL_VERSION: $(OPENSHELL_VERSION)"
 	@echo "  IMAGE_REGISTRY:  $(IMAGE_REGISTRY)"
@@ -134,6 +142,25 @@ build-qcow2:
 		--target-arch $(ARCH) \
 		--rootfs xfs \
 		--config /config.toml
+
+# KubeVirt containerDisk -- run this AFTER build-qcow2, it wraps that
+# target's output (out-tank-os/qcow2/disk.qcow2). See
+# docs/openshift-virtualization.md for the full pipeline.
+.PHONY: build-containerdisk
+build-containerdisk:
+	@if [ ! -f "out-tank-os/qcow2/disk.qcow2" ]; then \
+		echo "Error: out-tank-os/qcow2/disk.qcow2 not found. Run 'make build-qcow2' first."; \
+		exit 1; \
+	fi
+	cp out-tank-os/qcow2/disk.qcow2 deploy/containerdisk/disk.qcow2
+	podman build --platform $(PLATFORM) \
+		-t $(IMAGE_CONTAINERDISK_URI):latest \
+		-f deploy/containerdisk/Containerfile deploy/containerdisk
+	rm -f deploy/containerdisk/disk.qcow2
+
+.PHONY: push-containerdisk
+push-containerdisk:
+	podman push $(IMAGE_CONTAINERDISK_URI):latest
 
 .PHONY: build-iso
 build-iso:
