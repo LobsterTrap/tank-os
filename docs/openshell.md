@@ -58,6 +58,59 @@ plugin, which can take several minutes on a slow connection — this is why
 "known first-boot gap" pattern already documented for the image-pull
 timeout in `docs/provisioning.md`.
 
+## Testing this locally end to end
+
+1. Build and push the derived image first — the main image's Quadlet
+   references it by tag, so it has to exist in the registry before
+   `make build-qcow2` produces a disk that can actually boot successfully:
+
+   ```bash
+   make build-openclaw-openshell
+   make push-openclaw-openshell
+   ```
+
+1. Build the main image:
+
+   ```bash
+   make build
+   ```
+
+1. Create `config.toml` with your own SSH key (see `docs/build.md`'s
+   "Build A Disk Image With Make" section), then build and resize the
+   disk:
+
+   ```bash
+   make build-qcow2
+   qemu-img resize out-tank-os/qcow2/disk.qcow2 20G
+   ```
+
+1. Boot it (see `docs/build.md`'s "Launch on Linux (QEMU)" section for
+   the aarch64/macOS invocation) and SSH in as `openclaw`.
+
+1. `openclaw.service` does not auto-start on first boot (a known,
+   separate bug — see `tank-os-smoke-test-summary.md` finding #6), so
+   start it manually the first time:
+
+   ```bash
+   systemctl --user start openclaw.service
+   ```
+
+   First boot pulls the derived image and the sandbox image fresh, which
+   can take several minutes — `systemctl --user status openclaw.service`
+   will show `activating (start-pre)` while
+   `bootstrap-openshell-sandbox` is still running. This is normal; wait
+   for `active (running)`.
+
+1. Verify the sandbox is actually wired in:
+
+   ```bash
+   podman exec openclaw openclaw sandbox explain
+   ```
+
+   Look for `backend: openshell` and `runtime: sandboxed` — see
+   "Inspecting sandbox state" below for what a healthy report looks like
+   and for host-side checks.
+
 ## Inspecting sandbox state
 
 From inside the running OpenClaw container:

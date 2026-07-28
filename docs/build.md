@@ -228,6 +228,54 @@ qemu-system-x86_64 \
 
 The `_4M` variant is preferred for modern systems; fall back to standard paths if unavailable.
 
+**RHEL note**: RHEL's `/usr/share/OVMF/` only ships `OVMF_CODE.secboot.fd`
+(no plain `OVMF_CODE.fd`), so the auto-detection above won't find it. The
+plain firmware lives at `/usr/share/edk2/ovmf/` instead — pass it
+explicitly: `OVMF_CODE=/usr/share/edk2/ovmf/OVMF_CODE.fd
+OVMF_VARS=/usr/share/edk2/ovmf/OVMF_VARS.fd`.
+
+## Launch on macOS (Apple Silicon, QEMU + HVF)
+
+`examples/boot-tank-os-qemu.sh` doesn't support aarch64 (it hardcodes
+`qemu-system-x86_64` and `-machine q35`, an x86-only machine type) or
+Homebrew's firmware layout, so build an `arm64` disk and invoke QEMU
+directly instead:
+
+```bash
+make build-qcow2 ARCH=arm64
+qemu-img resize out-tank-os/qcow2/disk.qcow2 20G
+
+qemu_share="$(brew --prefix qemu)/share/qemu"
+cp "$qemu_share/edk2-arm-vars.fd" out-tank-os/qcow2/edk2-arm-vars.fd
+
+qemu-system-aarch64 \
+  -M virt,highmem=on \
+  -accel hvf \
+  -cpu host \
+  -smp 2 \
+  -m 4096 \
+  -drive file=out-tank-os/qcow2/disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
+  -drive if=pflash,format=raw,file=out-tank-os/qcow2/edk2-arm-vars.fd \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -nographic
+```
+
+Notes:
+
+- `-accel hvf -cpu host` gives hardware acceleration on Apple Silicon
+  (there's no `/dev/kvm` on macOS, so the `tcg`-fallback logic in
+  `boot-tank-os-qemu.sh` isn't relevant here).
+- The AArch64 UEFI code pairs with the generic `edk2-arm-vars.fd`
+  variables file — there's no separate `edk2-aarch64-vars.fd`.
+- `make build-qcow2` on macOS needs a **rootful** Podman machine
+  (`podman machine inspect --format '{{.Rootful}}'` should say `true`) —
+  do **not** prefix the command with `sudo` on the host shell, that
+  breaks the connection to your own Podman machine instead of granting
+  privilege. If `podman machine` isn't already rootful, recreate it or
+  run `podman machine set --rootful` (may require a machine restart).
+
 ## Upgrade A Running VM
 
 After pushing a new bootc image, switch the VM to the registry ref:
