@@ -16,13 +16,13 @@ Environment=HOME=/home/node
 Environment=TERM=xterm-256color
 Environment=NPM_CONFIG_CACHE=/home/node/.openclaw/.npm
 Environment=OPENCLAW_NO_RESPAWN=1
-EnvironmentFile=-%h/.openclaw/openclaw.env
+EnvironmentFile=%h/.openclaw/openclaw.env
 Exec=node dist/index.js gateway --allow-unconfigured --bind lan --port 18789
 
 [Service]
 ExecStartPre=/usr/libexec/tank-os/bootstrap-openclaw
 ExecStartPre=/usr/libexec/tank-os/bootstrap-openshell-sandbox
-TimeoutStartSec=300
+TimeoutStartSec=900
 Restart=on-failure
 
 [Install]

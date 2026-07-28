@@ -30,7 +30,7 @@ sandbox entirely, it doesn't wrap it.
   `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw`
   (Project Hummingbird-based, rebased from NVIDIA's own Ubuntu-based
   community sandbox images). It's pre-created under a fixed name
-  (`tank-os-openclaw-sandbox`) by
+  (`tankos-openclaw`) by
   `/usr/libexec/tank-os/bootstrap-openshell-sandbox` before OpenClaw's
   gateway ever starts, so OpenClaw's plugin just finds it via `sandbox get`
   and never needs to invoke `sandbox create` itself.
@@ -51,6 +51,13 @@ sandbox entirely, it doesn't wrap it.
 Both steps are idempotent — safe to re-run on every boot, cheap no-ops
 after the first.
 
+First boot has to pull the derived OpenClaw+OpenShell image and the
+`sandboxes/openclaw` image (a few hundred MB) in addition to installing the
+plugin, which can take several minutes on a slow connection — this is why
+`openclaw.container`'s `TimeoutStartSec` is set generously (900s), the same
+"known first-boot gap" pattern already documented for the image-pull
+timeout in `docs/provisioning.md`.
+
 ## Inspecting sandbox state
 
 From inside the running OpenClaw container:
@@ -67,8 +74,33 @@ From the VM host, as the `openclaw` user:
 
 ```bash
 systemctl --user status openshell-gateway.service
-openshell sandbox get tank-os-openclaw-sandbox
+openshell sandbox get tankos-openclaw
 ```
+
+## Known limitation: network policy enforcement under rootless Podman
+
+The sandbox's egress policy is enforced by an in-container process
+(`openshell_supervisor_network`, an OPA-based network supervisor) that
+intercepts connections and resolves the calling process's binary path via
+`/proc/<pid>/root/...` to match it against `policy.yaml`'s per-host
+`binaries` allow-lists. This resolution needs `CAP_SYS_PTRACE`, which
+rootless Podman does not grant by default — the sandbox logs a warning
+or when it can't do this ("Cannot access container filesystem for symlink
+resolution... run with CAP_SYS_PTRACE"), and falls back to literal
+path matching.
+
+**This was not fully verified as fail-closed in this session's test
+environment** (macOS + QEMU + rootless Podman machine): manual `curl`
+attempts to a non-allow-listed host from both `podman exec` and the real
+SSH bridge path did not reproduce a denial in that specific setup. This
+may be specific to the nested-virtualization test environment, or may
+indicate the policy engine needs `CAP_SYS_PTRACE` granted to the sandbox
+container to enforce reliably under rootless Podman. **Before relying on
+this for the exfiltration-test in the original upgrade plan's Phase 2/5,
+re-verify egress denial on a real target host** (bare metal or OpenShift
+Virtualization, not nested virtualization on a laptop), and if it's still
+not fail-closed, check whether the sandbox Quadlet/container needs
+`--cap-add=SYS_PTRACE` added explicitly.
 
 ## Adjusting policy
 

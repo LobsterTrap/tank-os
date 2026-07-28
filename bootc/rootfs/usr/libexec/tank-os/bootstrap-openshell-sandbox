@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Runs as an ExecStartPre for openclaw.container, before the OpenClaw
-# gateway container itself starts. Two jobs, both idempotent:
+# gateway container itself starts. Three jobs, all idempotent:
 #
 # 1. Install the openshell plugin into the persisted ~/.openclaw volume.
 #    openclaw.json (written by bootstrap-openclaw) already enables
@@ -13,7 +13,15 @@ set -euo pipefail
 #    normal container (that requires the container to already be running,
 #    see /usr/local/bin/openclaw), so this uses a one-shot throwaway
 #    container against the same image instead.
-# 2. Pre-create the OpenShell sandbox under a fixed name, using the
+# 2. Register the local openshell-gateway with the host's `openshell` CLI.
+#    NVIDIA's own install.sh does this automatically
+#    (`openshell gateway add https://127.0.0.1:17670 --local --name
+#    openshell`) as part of its post-install flow, but tank-os installs the
+#    RPM directly via dnf (see bootc/Containerfile) rather than running
+#    install.sh, so this step has to be replicated here explicitly --
+#    without it, `openshell sandbox get/create` below fails with
+#    "No active gateway."
+# 3. Pre-create the OpenShell sandbox under a fixed name, using the
 #    OpenShell gateway that already runs on this host (see
 #    openshell-gateway.service). OpenClaw's plugin then finds it via
 #    `sandbox get <name>` and never needs to invoke `sandbox create`
@@ -22,13 +30,15 @@ set -euo pipefail
 
 openclaw_image="${OPENCLAW_OPENSHELL_IMAGE:-localhost/tank-os-openclaw-openshell:latest}"
 openclaw_home="${HOME:-/var/home/openclaw}/.openclaw"
-sandbox_name="tank-os-openclaw-sandbox"
-sandbox_source="ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw@sha256:59f4856662cd6923c71c983fe6a6dade0ae939e5aa7361912e6e7134913c5205"
+gateway_name="openshell"
+gateway_endpoint="https://127.0.0.1:17670"
+sandbox_name="tankos-openclaw"
+sandbox_source="ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw@sha256:b1158a087b500548e1650cca1bb8536f6ac3b0bf7c387a6028f920a206423b6a"
 
 if ! find "$openclaw_home/npm/projects" -maxdepth 1 -iname '*openshell*' 2>/dev/null | grep -q .; then
   podman run --rm \
     --userns=keep-id \
-    -v "$openclaw_home:/home/node/.openclaw:Z" \
+    -v "$openclaw_home:/home/node/.openclaw:z" \
     -e HOME=/home/node \
     "$openclaw_image" \
     openclaw plugins install @openclaw/openshell-sandbox
@@ -38,6 +48,10 @@ for _ in $(seq 1 30); do
   systemctl --user is-active --quiet openshell-gateway.service && break
   sleep 1
 done
+
+if ! openshell gateway select "$gateway_name" >/dev/null 2>&1; then
+  openshell gateway add "$gateway_endpoint" --local --name "$gateway_name"
+fi
 
 if ! openshell sandbox get "$sandbox_name" >/dev/null 2>&1; then
   openshell sandbox create \

@@ -59,7 +59,7 @@ if [[ ! -f "$config_file" ]]; then
       "openshell": {
         "enabled": true,
         "config": {
-          "from": "tank-os-openclaw-sandbox",
+          "from": "tankos-openclaw",
           "mode": "remote"
         }
       }
