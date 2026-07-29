@@ -50,8 +50,17 @@ fine for a private build, useless for anyone else pulling the same
 published image. The fix isn't to rebuild the image per person (that
 defeats the point of publishing one shared containerdisk); it's to inject
 your own key at **boot time** instead, via a small cloud-init NoCloud seed
-ISO attached alongside the disk. This is the same mechanism Lima uses to
-give every instance its own key without baking anything into its shared
+ISO attached alongside the disk.
+
+Confirmed this holds even with **no baked-in key at all**: built a qcow2
+from a `config.toml` with an empty `[customizations]` block (no
+`[[customizations.user]]` entry, so `~openclaw/.ssh/authorized_keys` doesn't
+exist until cloud-init creates it) and deployed it on OpenShift
+Virtualization with only `deploy/base/virtualmachine.yaml`'s
+`cloudInitNoCloud` supplying a key — SSH worked immediately, same as every
+other test in this doc. The baked-in key was never load-bearing; cloud-init
+alone is sufficient. This is the same mechanism Lima uses to give every
+instance its own key without baking anything into its shared
 base images, and the same `cloudInitNoCloud` shape already used for
 per-user VMs in `deploy/base/virtualmachine.yaml`.
 
