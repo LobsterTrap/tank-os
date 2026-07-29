@@ -44,10 +44,18 @@ echo "CPU Cores: $QEMU_SMP"
 echo "SSH Port: localhost:$SSH_PORT"
 echo ""
 
-# Check QEMU availability
+# Check QEMU availability. RHEL doesn't ship a separate qemu-system-x86_64
+# binary -- its qemu-kvm package only installs /usr/libexec/qemu-kvm -- so
+# fall back to that if the default name isn't found, instead of requiring
+# QEMU_BIN=/usr/libexec/qemu-kvm to be set manually every time.
 if ! command -v "$QEMU_BIN" &> /dev/null; then
-    echo -e "${RED}ERROR: $QEMU_BIN not found. Install QEMU and retry.${NC}"
-    exit 1
+    if [[ "$(basename "$QEMU_BIN")" == "qemu-system-x86_64" ]] && [[ -x /usr/libexec/qemu-kvm ]]; then
+        echo -e "${YELLOW}-> qemu-system-x86_64 not found; using /usr/libexec/qemu-kvm (RHEL)${NC}"
+        QEMU_BIN="/usr/libexec/qemu-kvm"
+    else
+        echo -e "${RED}ERROR: $QEMU_BIN not found. Install QEMU and retry.${NC}"
+        exit 1
+    fi
 fi
 
 # Detect OVMF firmware files
@@ -55,8 +63,12 @@ detect_ovmf() {
     local code_fd=""
     local vars_fd=""
 
-    # Prefer 4M variants (most common on modern systems)
-    for path in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2-ovmf; do
+    # Prefer 4M variants (most common on modern systems). /usr/share/edk2/ovmf
+    # is where RHEL puts the plain (non-secboot) firmware -- RHEL's
+    # /usr/share/OVMF only ships OVMF_CODE.secboot.fd, which this script
+    # doesn't look for, so without this path RHEL hosts fall through to the
+    # "OVMF firmware not found" error despite OVMF being installed.
+    for path in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2-ovmf /usr/share/edk2/ovmf; do
         if [[ -f "$path/OVMF_CODE_4M.fd" ]]; then
             code_fd="$path/OVMF_CODE_4M.fd"
             [[ -f "$path/OVMF_VARS_4M.fd" ]] && vars_fd="$path/OVMF_VARS_4M.fd"

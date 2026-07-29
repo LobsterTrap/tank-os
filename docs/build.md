@@ -131,6 +131,25 @@ out-tank-os/qcow2/disk.qcow2
 On macOS with Podman Desktop, use the rootful Podman machine connection because
 bootc-image-builder needs privileged access to the container storage.
 
+**On a bare Linux host (RHEL, Fedora Workstation/Server, etc. — no Podman
+Desktop/machine layer)**: `build-qcow2` and `build-iso` (they share the
+same `--local` flag and the same
+`-v /var/lib/containers/storage:/var/lib/containers/storage` bind-mount)
+both require *rootful* Podman, and `--privileged` alone doesn't make a
+rootless invocation rootful —
+bootc-image-builder checks that the outer `podman` command itself is
+rootful, not just that the container it launches runs privileged. If you
+built the image as your own user (the Makefile's default, rootless
+Podman), `sudo make build-qcow2`/`sudo make build-iso` alone will still
+fail to find it: rootless and rootful Podman keep entirely separate image
+storage (`sudo podman images` and `podman images` show different lists on
+the same host). Build and run all steps as root instead:
+
+```bash
+sudo make build
+sudo make build-qcow2   # or: sudo make build-iso
+```
+
 ## Makefile Targets
 
 Common targets:
@@ -242,10 +261,19 @@ using `-nographic`.
 The `_4M` variant is preferred for modern systems; fall back to standard paths if unavailable.
 
 **RHEL note**: RHEL's `/usr/share/OVMF/` only ships `OVMF_CODE.secboot.fd`
-(no plain `OVMF_CODE.fd`), so the auto-detection above won't find it. The
-plain firmware lives at `/usr/share/edk2/ovmf/` instead — pass it
-explicitly: `OVMF_CODE=/usr/share/edk2/ovmf/OVMF_CODE.fd
-OVMF_VARS=/usr/share/edk2/ovmf/OVMF_VARS.fd`.
+(no plain `OVMF_CODE.fd`) — the plain firmware lives at
+`/usr/share/edk2/ovmf/` instead. `examples/boot-tank-os-qemu.sh` already
+searches that path automatically, so this only matters for the **manual**
+invocation above, which hardcodes a literal `/usr/share/OVMF/...` path and
+has no auto-detection at all. Override it explicitly:
+
+```bash
+export OVMF_CODE=/usr/share/edk2/ovmf/OVMF_CODE.fd
+export OVMF_VARS=/usr/share/edk2/ovmf/OVMF_VARS.fd
+```
+
+and substitute `$OVMF_CODE`/`$OVMF_VARS` for the hardcoded paths in the
+`-drive if=pflash,...` lines above.
 
 ## Launch on macOS (Apple Silicon, QEMU + HVF)
 
@@ -336,6 +364,39 @@ kill "$(cat out-tank-os/qcow2/qemu.pid)"   # to shut the VM down
 substitution works on the Linux invocation above too — it isn't
 aarch64/macOS-specific, just documented here since it's what came up while
 testing this section.)
+
+## Troubleshooting
+
+**`out-tank-os` owned by root after `sudo make build-qcow2`**: on a bare
+Linux host you ran `sudo make build`/`sudo make build-qcow2` as documented
+above, so `bootc-image-builder` (running as root inside the container) owns
+everything it wrote to the bind-mounted `out-tank-os/` directory. Reclaim it
+before resizing the disk or doing anything else as your own user:
+
+```bash
+sudo chown -R "$(id -un):$(id -gn)" out-tank-os
+```
+
+**QEMU fails with `Could not set up host forwarding rule 'tcp::2222-:22'`**:
+this is QEMU's usermode (`-netdev user`) networking failing to bind the
+forwarded port on the host — it doesn't need root (2222 is well above the
+privileged-port range), so adding `sudo` to the QEMU launch isn't the fix.
+It almost always means something is already listening on that port, most
+often a QEMU process from an earlier attempt that didn't exit cleanly.
+Find and stop it:
+
+```bash
+sudo lsof -ti:2222 | xargs -r kill
+```
+
+(`ss -ltnp | grep 2222` also shows it, but the PID is buried inside
+`users:((...,pid=NNNN,...))` and isn't as easy to pull out and pipe to
+`kill` directly.)
+
+Then re-run the launch script or manual `qemu-system-*` invocation. If you
+need multiple VMs running at once instead, give each one a distinct
+`SSH_PORT` (or the equivalent `hostfwd` value in a manual invocation)
+rather than hunting down conflicts every time.
 
 ## Upgrade A Running VM
 
