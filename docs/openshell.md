@@ -12,12 +12,17 @@ sandbox entirely, it doesn't wrap it.
 ## Where each piece runs
 
 - **`openshell-gateway`** runs on the VM host as a rootless systemd *user*
-  service under the `openclaw` user (installed via RPM in
-  `bootc/Containerfile`, enabled globally so it starts under that user's
-  session the same way the Quadlet-generated services do). It's the piece
-  that actually creates and manages sandbox containers, using that user's
-  rootless Podman — it needs real container-runtime access, which the
-  OpenClaw container itself never has.
+  service under the `openclaw` user. The unit file itself
+  (`openshell-gateway.service`) ships inside the `openshell-gateway` RPM
+  installed in `bootc/Containerfile` — it is not checked into this repo.
+  `bootc/Containerfile` only symlinks it into
+  `/etc/systemd/user/default.target.wants/` so it starts under that user's
+  session the same way the Quadlet-generated services do; if you go
+  looking for its unit definition, `rpm -ql openshell-gateway` on the built
+  image (or the RPM itself) is where to find it, not this repo. It's the
+  piece that actually creates and manages sandbox containers, using that
+  user's rootless Podman — it needs real container-runtime access, which
+  the OpenClaw container itself never has.
 - **The `openshell` CLI** lives inside the OpenClaw container (see
   `bootc/openclaw-openshell/Containerfile`, a small image layered on top of
   the published `ghcr.io/openclaw/openclaw` image with an SSH client and
@@ -57,6 +62,38 @@ plugin, which can take several minutes on a slow connection — this is why
 `openclaw.container`'s `TimeoutStartSec` is set generously (900s), the same
 "known first-boot gap" pattern already documented for the image-pull
 timeout in `docs/provisioning.md`.
+
+## Security trade-off: `Network=host` on `openclaw.container`
+
+`openclaw.container` runs with `Network=host` instead of Podman's default
+per-container network namespace, so the `openshell` CLI inside it can reach
+`openshell-gateway` at `https://127.0.0.1:17670` on the VM host's loopback
+interface — a container-namespaced network can't see the host's loopback
+without an explicit port mapping, and the gateway binds to loopback only
+(it's not meant to be reachable from outside the VM).
+
+This gives the OpenClaw container the host's full network namespace: it can
+bind any port the `openclaw` user's privileges allow and see all of that
+user's network traffic, not just what it would see in an isolated
+namespace. In this design that's a narrower exposure than it sounds --
+OpenClaw's own tool-call traffic is meant to be sandboxed by OpenShell
+*inside* the sandbox container instead, so `Network=host` mainly affects
+the outer OpenClaw process's own connectivity (the gateway's control-plane
+traffic), not the untrusted code paths OpenShell is actually there to
+contain. Still, it's a real widening of what the OpenClaw container can
+reach compared to the isolated-network default, worth calling out
+explicitly rather than leaving implicit in the Quadlet file.
+
+A less permissive alternative worth revisiting: publish the gateway on a
+fixed address on Podman's default bridge network (or a dedicated Podman
+network shared by both containers) instead of the host's loopback, or have
+it listen on a Unix socket bind-mounted into the OpenClaw container. Either
+would let `openclaw.container` drop back to Podman's normal network
+isolation. Not done here because it would require coordinating a socket
+path or a stable bridge-network address across `openshell-gateway.service`
+(RPM-owned, not this repo) and `bootc/openclaw-openshell`'s CLI
+configuration — deferred rather than attempted without being able to test
+it against a real `openshell-gateway` release first.
 
 ## Testing this locally end to end
 

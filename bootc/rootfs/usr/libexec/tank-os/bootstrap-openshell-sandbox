@@ -37,9 +37,28 @@ openclaw_home="${HOME:-/var/home/openclaw}/.openclaw"
 gateway_name="openshell"
 gateway_endpoint="https://127.0.0.1:17670"
 sandbox_name="tankos-openclaw"
+# Pinned by digest, not a mutable tag, for build reproducibility. This
+# digest corresponds to tag `55cd0dd44719e6806c5725335b8914012be6461a` in
+# that repo (confirmed via `skopeo inspect --raw
+# docker://ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:<tag>
+# | sha256sum`, since the tag itself isn't in the pulled image's own
+# labels). To update: pick the new tag, run the same `skopeo inspect --raw`
+# command against it to get its manifest-list digest, and replace both the
+# digest below and this comment's tag reference together -- don't update
+# one without the other, or a future reader has no way to tell what this
+# digest actually points to.
 sandbox_source="ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw@sha256:b1158a087b500548e1650cca1bb8536f6ac3b0bf7c387a6028f920a206423b6a"
 
 if ! find "$openclaw_home/npm/projects" -maxdepth 1 -iname '*openshell*' 2>/dev/null | grep -q .; then
+  # :z (shared), not :Z (private) like openclaw.container's own mount of
+  # this same path -- this one-shot container previously used :Z too,
+  # which intermittently produced EACCES/spawn-EACCES errors in the main
+  # OpenClaw container (relabeling the tree exclusive to this short-lived
+  # container's SELinux context). :z only relabels this path once, the
+  # first time the plugin is installed -- this whole block is skipped on
+  # every later boot once `find` above succeeds, so there's no repeated
+  # relabel/boot-time cost, just a one-time tag as shared instead of
+  # exclusive.
   podman run --rm \
     --userns=keep-id \
     -v "$openclaw_home:/home/node/.openclaw:z" \
@@ -48,10 +67,19 @@ if ! find "$openclaw_home/npm/projects" -maxdepth 1 -iname '*openshell*' 2>/dev/
     openclaw plugins install @openclaw/openshell-sandbox
 fi
 
+gateway_ready=false
 for _ in $(seq 1 30); do
-  systemctl --user is-active --quiet openshell-gateway.service && break
+  if systemctl --user is-active --quiet openshell-gateway.service; then
+    gateway_ready=true
+    break
+  fi
   sleep 1
 done
+
+if [ "$gateway_ready" != true ]; then
+  echo "bootstrap-openshell-sandbox: openshell-gateway.service did not become active within 30s" >&2
+  exit 1
+fi
 
 if ! openshell gateway select "$gateway_name" >/dev/null 2>&1; then
   openshell gateway add "$gateway_endpoint" --local --name "$gateway_name"

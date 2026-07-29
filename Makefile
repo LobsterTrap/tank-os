@@ -72,6 +72,12 @@ help:
 
 .PHONY: build
 build:
+	@if ! podman image exists $(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF); then \
+		echo "Warning: $(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF) not found in local Podman storage."; \
+		echo "  openclaw.container references this image by tag -- if it's not already pushed to its"; \
+		echo "  registry either, run 'make build-openclaw-openshell push-openclaw-openshell' first, or"; \
+		echo "  the resulting disk image will fail to pull it on boot."; \
+	fi
 	podman build --platform $(PLATFORM) $(BUILD_ARGS) -t $(IMAGE_URI):latest -f bootc/Containerfile bootc
 
 .PHONY: push

@@ -30,6 +30,7 @@ ARG OPENSHELL_VERSION=0.0.92
 RUN set -eux; \
     dnf -y install \
       cloud-init \
+      curl \
       openssh-server \
       podman \
       python3 \
@@ -38,9 +39,15 @@ RUN set -eux; \
       sudo \
       vim-enhanced; \
     arch="$(rpm -E %{_arch})"; \
-    dnf -y install \
-      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm" \
-      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-gateway-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm"; \
+    openshell_base_url="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}"; \
+    openshell_rpm="openshell-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm"; \
+    openshell_gateway_rpm="openshell-gateway-${OPENSHELL_VERSION}-1.fc44.${arch}.rpm"; \
+    curl -fsSL -o "/tmp/${openshell_rpm}" "${openshell_base_url}/${openshell_rpm}"; \
+    curl -fsSL -o "/tmp/${openshell_gateway_rpm}" "${openshell_base_url}/${openshell_gateway_rpm}"; \
+    curl -fsSL -o /tmp/openshell-checksums-sha256.txt "${openshell_base_url}/openshell-checksums-sha256.txt"; \
+    (cd /tmp && grep -E " (${openshell_rpm}|${openshell_gateway_rpm})\$" openshell-checksums-sha256.txt | sha256sum -c -); \
+    dnf -y install "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}"; \
+    rm -f "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}" /tmp/openshell-checksums-sha256.txt; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*; \
     getent group openclaw >/dev/null || groupadd -g "${OPENCLAW_GID}" openclaw; \
