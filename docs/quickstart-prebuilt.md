@@ -24,12 +24,18 @@ podman cp tank-os-extract:/disk/disk.qcow2 ./tank-os-disk.qcow2
 podman rm tank-os-extract
 ```
 
-This qcow2 was built with `--rootfs xfs` for `arm64` (see the Makefile's
-`build-containerdisk` target) — it boots on Apple Silicon and on aarch64
-Linux hosts directly. For x86_64, either build locally
-(`make build-qcow2 ARCH=amd64`, see `docs/build.md`) or ask whoever publishes
-images to also push an amd64-tagged containerdisk; a single tag can only hold
-one architecture's disk.
+All three published tags (`tank-os`, `tank-claw-openshell`,
+`tank-os-containerdisk`) are real multi-arch manifest lists covering both
+`arm64` and `amd64` — `podman pull`/`create` above automatically gets the
+disk matching whatever machine you run it on, no `ARCH=` flag or separate
+tag needed. (This wasn't always true: earlier in this repo's history these
+were single-arch images built only from an Apple Silicon Mac, which broke
+silently on amd64 targets — see `docs/openshift-virtualization.md`'s "What
+broke on a real cluster" for how that surfaced and got fixed. If you're
+publishing new versions of these images yourself, build and push both
+architectures and merge them with `podman manifest create`/`push --all`
+before publishing, or you'll reintroduce the same problem for the next
+architecture that isn't yours.)
 
 The SSH key already baked into the published qcow2 belongs to whoever built
 and pushed it — you almost certainly don't have that private key, so plain

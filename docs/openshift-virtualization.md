@@ -4,17 +4,60 @@ This packages tank-os as a KubeVirt `containerDisk` and automates
 per-user VM provisioning via ArgoCD, so onboarding a user means adding
 one line to a list, not manually creating a VM.
 
-**Status: images published, not yet deployed against a live cluster.**
-`quay.io/redhat-et/tank-os`, `tank-claw-openshell`, and
-`tank-os-containerdisk` are all built and pushed (public read, confirmed
-via anonymous pull). No OpenShift Virtualization (CNV)-capable cluster
-with bare-metal nodes was available while writing this (same gap as the
-original smoke test — see `tank-os-smoke-test-summary.md`), so the
-`deploy/` manifests themselves have only been validated locally
-(`kustomize build`, manual patch-rendering simulation, `oc apply
---dry-run=client`), not against a real ArgoCD/KubeVirt install. See "First
-real cluster test" at the end for what to run the moment cluster access
-exists.
+**Status: confirmed working on a live OpenShift Virtualization cluster**
+(OpenShift Virtualization 4.21.13, 2026-07-29) — a `VirtualMachine` applied
+directly from `deploy/base/` (not yet through the ArgoCD `ApplicationSet`;
+see "Still open" below) reached `Running`, cloud-init applied the injected
+SSH key and hostname, and the OpenClaw/OpenShell bootstrap sequence came up
+the same way it does under QEMU/Lima. Two real bugs turned up and are fixed
+as of this test — see "What broke on a real cluster" below.
+
+**Still open:** the ArgoCD `ApplicationSet` itself (`deploy/applicationset.yaml`)
+has only been validated locally (`kustomize build`, manual patch-rendering
+simulation) — the direct-`oc apply` smoke test validates the `VirtualMachine`
+manifest and images, not ArgoCD's own Go-template rendering or the
+per-namespace GitOps flow. See "First real cluster test" for what's left.
+
+## What broke on a real cluster (and is now fixed)
+
+- **The published images were arm64-only, not actually multi-arch.**
+  `quay.io/redhat-et/{tank-os,tank-claw-openshell,tank-os-containerdisk}`
+  had all been built from an Apple Silicon Mac and pushed as plain
+  single-architecture images — nothing checked this against a real amd64
+  target until this cluster test failed with the VM's guest network never
+  coming up (`no route to host` dialing the SSH port; the guest OS never
+  actually booted because an aarch64 kernel/bootloader can't run under an
+  x86_64 KVM domain, which is what KubeVirt configures on this cluster's
+  amd64 nodes). Fixed by building genuine amd64 variants of all three
+  images on a native x86_64 host and merging them with the existing arm64
+  images into real multi-arch manifest lists (`podman manifest
+  create`/`push --all`) under the same tags — `docker`/`podman`/KubeVirt
+  now all pull the architecture that matches the node automatically. No
+  arch-specific tags needed going forward; keep pushing both architectures
+  under the same tag when either image changes.
+- **`spec.running: true` is deprecated** in this cluster's KubeVirt version
+  (`spec.runStrategy: Always` is the replacement) — `oc apply` warned but
+  didn't fail. Fixed in `deploy/base/virtualmachine.yaml`; confirmed via
+  `oc apply --dry-run=server` that `runStrategy: Always` validates with no
+  warning against the real CRD.
+
+## Connecting to a VM's SSH port
+
+Nothing in this doc previously said *how* to actually reach a VM's SSH
+port from outside the cluster — `ssh openclaw@<pod-ip>` doesn't work here,
+the VM's pod-network IP isn't routable from your workstation. Use
+`virtctl port-forward` (from the `virtctl` CLI, downloadable via
+`oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged
+-o jsonpath='{.spec.links[*].href}'` for a build matching your OS/arch):
+
+```bash
+virtctl port-forward -n <namespace> vmi/<vm-name> 2222:22 &
+ssh -p 2222 openclaw@localhost
+```
+
+`oc port-forward` does **not** work against a `VirtualMachineInstance`
+directly (`oc`'s client-go scheme doesn't know the `kubevirt.io/v1` types) —
+this has to be `virtctl`, not plain `oc`/`kubectl`.
 
 ## Architecture
 
@@ -98,26 +141,44 @@ are sound.
 
 ## First real cluster test
 
-Once a CNV-capable cluster (OpenShift Virtualization operator installed,
-bare-metal-capable nodes) is available:
+Confirmed so far, on a live OpenShift Virtualization 4.21.13 cluster
+(2026-07-29):
 
-1. Confirm OpenShift GitOps (ArgoCD) is installed:
-   `oc get csv -n openshift-gitops-operator`.
+- [x] Cluster has the KubeVirt CRDs, a `HyperConverged` CR, and schedulable
+  nodes (`oc get hyperconverged -A`, `oc get nodes -l
+  kubevirt.io/schedulable=true`) — all present and healthy.
+- [x] `deploy/base/virtualmachine.yaml` applied directly (`oc apply`, real
+  SSH key and namespace substituted for the placeholders) reaches
+  `Running`/`Ready` against the real `VirtualMachine` CRD.
+- [x] cloud-init applies the injected SSH key and `hostname:` correctly;
+  `virtctl port-forward` + `ssh` confirms connectivity (see "Connecting to
+  a VM's SSH port" above).
+- [x] OpenClaw/OpenShell bootstrap sequence (`bootstrap-openclaw` →
+  `bootstrap-openshell-sandbox`) comes up the same way as under QEMU/Lima.
+- [x] Multi-arch images (both fixes above) — confirmed by rebuilding amd64
+  variants on a native x86_64 host and re-testing after the manifest-list
+  fix.
+
+Still to do — the ArgoCD `ApplicationSet` path itself:
+
+1. Confirm OpenShift GitOps (ArgoCD) is installed: `oc get csv -A | grep -i
+   gitops` (namespace varies by install — don't hardcode
+   `openshift-gitops-operator`, check for it).
 2. Replace `REPLACE_WITH_YOUR_PUBLIC_KEY` in
    `deploy/applicationset.yaml`'s patch (and in `deploy/base/virtualmachine.yaml`,
    used only if the patch doesn't apply for some element) with a real key.
-3. Build, publish, and confirm the containerDisk pulls:
-   `make build-qcow2 build-containerdisk push-containerdisk`, then
-   `podman pull $(IMAGE_CONTAINERDISK_URI):latest` from a clean environment
-   to confirm public read access.
+3. Update `deploy/applicationset.yaml`'s `repoURL`/`targetRevision` to
+   point at wherever these manifests actually live (currently `main` on
+   `LobsterTrap/tank-os.git`, which won't have `deploy/` until this PR
+   merges) — or target this branch directly for a pre-merge test.
 4. `oc apply -f deploy/applicationset.yaml` and watch
    `oc get applications -n openshift-gitops` for sync health.
 5. Confirm the namespaces (`tank-alice`, `tank-bob`, ...) were created
    and each has a `VirtualMachine`/`VirtualMachineInstance` reaching
    `Running`.
-6. SSH into one VM and confirm `hostname` matches
-   (`tank-alice`, not `tank`) and OpenClaw/OpenShell come up the same way
-   verified in `docs/openshell.md`'s manual test.
+6. SSH into one VM (via `virtctl port-forward`, see above) and confirm
+   `hostname` matches (`tank-alice`, not `tank`) and OpenClaw/OpenShell
+   come up the same way verified in `docs/openshell.md`'s manual test.
 7. Edit the `ApplicationSet` to add a throwaway test user, confirm ArgoCD
    creates the new `Application`/namespace/VM without touching the
    existing ones, then remove it again to confirm cleanup

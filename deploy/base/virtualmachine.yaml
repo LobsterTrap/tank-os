@@ -10,7 +10,7 @@ metadata:
     app: tank-os
     tank-os/user: USER_PLACEHOLDER
 spec:
-  running: true
+  runStrategy: Always
   template:
     metadata:
       labels:
