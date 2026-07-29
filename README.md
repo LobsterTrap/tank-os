@@ -39,10 +39,12 @@ or tightly scoped sudo policy for OS management and bootc updates.
 ## Start Here
 
 - Build the image: [docs/build.md](docs/build.md)
+- Run it without building anything: [docs/quickstart-prebuilt.md](docs/quickstart-prebuilt.md)
 - Configure login access: [docs/provisioning.md](docs/provisioning.md)
 - Use the OpenClaw CLI: [docs/cli.md](docs/cli.md)
 - Configure model provider keys: [docs/model-providers.md](docs/model-providers.md)
 - Configure service-gator: [docs/service-gator.md](docs/service-gator.md)
+- Deploy per-user VMs on OpenShift Virtualization: [docs/openshift-virtualization.md](docs/openshift-virtualization.md)
 
 For bootc concepts and day-2 operations, see the upstream [bootc documentation](https://bootc-dev.github.io/bootc/).
 For disk image builds, see the [Podman Desktop BootC extension](https://github.com/podman-desktop/extension-bootc)

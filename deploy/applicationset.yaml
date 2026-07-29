@@ -23,9 +23,14 @@ spec:
   goTemplateOptions: ["missingkey=error"]
   generators:
     - list:
-        elements:
-          - user: alice
-          - user: bob
+        # No live entries by default -- applying this file as-is with a
+        # real ssh_authorized_keys value below would create real VMs
+        # nobody can log into, since alice/bob here are just examples.
+        # Replace REPLACE_WITH_YOUR_PUBLIC_KEY below with a real key, then
+        # uncomment the users you actually want.
+        elements: []
+          # - user: alice
+          # - user: bob
           # - user: carol
           # ... one entry per user, up to however many you're running.
   template:
@@ -51,6 +56,19 @@ spec:
               # visibility into a YAML value that's itself a raw string.
               # volumes/1 assumes cloudinitdisk stays the second volume in
               # the base file (see the comment there).
+              #
+              # Known fragility, accepted for now rather than redesigned:
+              # this whole userData block must be kept in sync by hand with
+              # deploy/base/virtualmachine.yaml's copy -- if that file's
+              # cloud-config shape changes (a new user field, a different
+              # runcmd) and this patch isn't updated to match, per-user VMs
+              # will silently diverge from the base instead of failing
+              # loudly. The real fix (move userData into a Kustomize
+              # ConfigMap/component so there's one source of truth) is a
+              # bigger restructuring of deploy/base's layout than this
+              # phase's scope covers -- worth doing before this pattern is
+              # copied to a second differently-shaped VM template, not
+              # urgent for the current single-template setup.
               patch: |-
                 - op: replace
                   path: /metadata/name

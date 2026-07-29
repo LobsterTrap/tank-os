@@ -67,7 +67,8 @@ help:
 	@echo "  push           Push the image to registry (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)"
 	@echo "  build-qcow2    Build a QCOW2 disk image using bootc-image-builder"
 	@echo "  build-containerdisk  Wrap the qcow2 as a KubeVirt containerDisk (run build-qcow2 first)"
-	@echo "  push-containerdisk   Push it to IMAGE_CONTAINERDISK_URI"
+	@echo "  push-containerdisk   Push it to IMAGE_CONTAINERDISK_URI:latest (single-arch, see WARNING)"
+	@echo "  push-containerdisk-arch  Push it to IMAGE_CONTAINERDISK_URI:\$$(ARCH), safe for multi-arch merge"
 	@echo "  build-iso      Build an ISO installer using bootc-image-builder"
 	@echo "  lint           Run bootc container lint (if available)"
 	@echo "  verify         Verify image signature with cosign (if COSIGN_PUBLIC_KEY is set)"
@@ -160,7 +161,29 @@ build-containerdisk:
 
 .PHONY: push-containerdisk
 push-containerdisk:
+	@echo "WARNING: $(IMAGE_CONTAINERDISK_URI):latest is expected to be a"; \
+	echo "multi-arch manifest list. This target pushes a single-arch"; \
+	echo "($(ARCH)) image straight to that tag, which silently REPLACES the"; \
+	echo "manifest list with a single-arch image -- breaking every other"; \
+	echo "architecture's pull. If you're updating the shared published"; \
+	echo "image, push each arch under its own tag instead and merge with"; \
+	echo "'podman manifest create/add' + 'push --all' -- see"; \
+	echo "docs/openshift-virtualization.md's \"Publishing a multi-arch"; \
+	echo "containerdisk\" section. Only push straight to :latest for a"; \
+	echo "personal single-arch build you don't intend anyone else to pull."
 	podman push $(IMAGE_CONTAINERDISK_URI):latest
+
+# Safe building block for publishing a multi-arch containerdisk -- pushes
+# under an arch-specific tag instead of :latest, so it can never clobber
+# the published manifest list. Run on each architecture's own native
+# host, then merge the resulting tags into a manifest list with `podman
+# manifest create`/`push --all` -- see
+# docs/openshift-virtualization.md's "Publishing a multi-arch
+# containerdisk" section for the exact commands.
+.PHONY: push-containerdisk-arch
+push-containerdisk-arch:
+	podman tag $(IMAGE_CONTAINERDISK_URI):latest $(IMAGE_CONTAINERDISK_URI):$(ARCH)
+	podman push $(IMAGE_CONTAINERDISK_URI):$(ARCH)
 
 .PHONY: build-iso
 build-iso:
@@ -213,3 +236,4 @@ verify:
 .PHONY: clean
 clean:
 	rm -rf out-tank-os
+	rm -f deploy/containerdisk/disk.qcow2

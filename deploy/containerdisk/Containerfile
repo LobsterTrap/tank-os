@@ -4,8 +4,10 @@
 # virt-handler extracts it directly from the image layers at VM start; it
 # never runs this image as a container.
 #
-# Build context must be the directory containing disk.qcow2 (typically
-# out-tank-os/qcow2/) -- see the `build-containerdisk` Makefile target.
+# Build context must be the directory containing disk.qcow2 -- the
+# `build-containerdisk` Makefile target copies it here (from
+# out-tank-os/qcow2/) and uses this directory (deploy/containerdisk/) as
+# the build context, not out-tank-os/qcow2/ itself.
 
 FROM scratch
 COPY disk.qcow2 /disk/

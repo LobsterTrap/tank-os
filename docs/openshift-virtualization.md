@@ -4,19 +4,17 @@ This packages tank-os as a KubeVirt `containerDisk` and automates
 per-user VM provisioning via ArgoCD, so onboarding a user means adding
 one line to a list, not manually creating a VM.
 
-**Status: confirmed working on a live OpenShift Virtualization cluster**
-(OpenShift Virtualization 4.21.13, 2026-07-29) — a `VirtualMachine` applied
-directly from `deploy/base/` (not yet through the ArgoCD `ApplicationSet`;
-see "Still open" below) reached `Running`, cloud-init applied the injected
-SSH key and hostname, and the OpenClaw/OpenShell bootstrap sequence came up
-the same way it does under QEMU/Lima. Two real bugs turned up and are fixed
-as of this test — see "What broke on a real cluster" below.
-
-**Still open:** the ArgoCD `ApplicationSet` itself (`deploy/applicationset.yaml`)
-has only been validated locally (`kustomize build`, manual patch-rendering
-simulation) — the direct-`oc apply` smoke test validates the `VirtualMachine`
-manifest and images, not ArgoCD's own Go-template rendering or the
-per-namespace GitOps flow. See "First real cluster test" for what's left.
+**Status: confirmed working end to end on a live OpenShift Virtualization
+cluster** (OpenShift Virtualization 4.21.13, 2026-07-29), including the
+full ArgoCD `ApplicationSet` path — not just a direct `oc apply` of the
+`VirtualMachine` manifest. `oc apply -f deploy/applicationset.yaml`
+generated per-user `Application`s, each with its own namespace and a
+`Running`/`Ready` VM; cloud-init applied the injected SSH key and hostname
+correctly for each user; and the OpenClaw/OpenShell bootstrap sequence came
+up the same way it does under QEMU/Lima. Three real bugs turned up during
+this testing and are fixed as of this doc — see "What broke on a real
+cluster" and "First real cluster test" below for what was found and what's
+still an open, documented gap (namespace cleanup on user removal).
 
 ## What broke on a real cluster (and is now fixed)
 
@@ -100,6 +98,36 @@ from local Podman storage via `--local`), but it's what makes
 VMs (see `docs/build.md`'s "Upgrade A Running VM"), and lets this whole
 pipeline be reproduced from a different machine or CI runner instead of
 requiring the exact local build state.
+
+### Publishing a multi-arch containerdisk
+
+All three published tags are real multi-arch manifest lists (see "What
+broke on a real cluster" below for why this matters) — `make
+push-containerdisk` as shown above only pushes whatever single
+architecture you built locally, and pushing that straight to `:latest`
+would silently replace the manifest list with a single-arch image
+(`make` prints a warning at that exact point). To publish a genuine
+update covering both architectures, build each on its own native host
+(cross-arch emulation works but is slow) and merge them:
+
+```bash
+# On an arm64 host:
+make build-containerdisk push-containerdisk-arch   # pushes :$(ARCH), i.e. :arm64
+
+# On an amd64 host:
+make build-containerdisk push-containerdisk-arch   # pushes :amd64
+
+# From either host, once both arch tags exist in the registry:
+podman manifest create quay.io/redhat-et/tank-os-containerdisk:latest \
+  docker://quay.io/redhat-et/tank-os-containerdisk:arm64 \
+  docker://quay.io/redhat-et/tank-os-containerdisk:amd64
+podman manifest push --all quay.io/redhat-et/tank-os-containerdisk:latest \
+  docker://quay.io/redhat-et/tank-os-containerdisk:latest
+```
+
+This is exactly the procedure used to fix the multi-arch bug below —
+confirmed working by rebuilding on a native x86_64 host and merging with
+the existing arm64 image.
 
 ## Adding a user
 

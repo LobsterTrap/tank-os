@@ -1,4 +1,4 @@
-# Quick Start: Run tank-os From Published Images
+# Quick start: run tank-os from published images
 
 This is the "just run it" path — no `make build`, no bootc-image-builder
 invocation, no `config.toml`. Everything here pulls from the already-published
@@ -19,7 +19,7 @@ The containerdisk image is a `FROM scratch` wrapper around one file
 pulls it out without running the container:
 
 ```bash
-podman create --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
+podman create --replace --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
 podman cp tank-os-extract:/disk/disk.qcow2 ./tank-os-disk.qcow2
 podman rm tank-os-extract
 ```
@@ -220,17 +220,18 @@ across all three of Lima's VM drivers. Ready-made manifests are at
 
 | Manifest | Driver | Notes |
 | --- | --- | --- |
-| `tank-os-qemu.yaml` | QEMU | Works on macOS and Linux hosts alike; same HVF acceleration as the plain-QEMU recipe above |
-| `tank-os-vz.yaml` | Apple `Virtualization.framework` | macOS only, no firmware files to manage; networked over vsock instead of usermode NAT |
-| `tank-os-krunkit.yaml` | krunkit (libkrun) | macOS only; keeps the whole stack on the same hypervisor family this repo's own Podman-machine build path already uses |
+| `tank-os-qemu.yaml` | QEMU | No `arch:` field — Lima defaults to the host's own architecture, and the containerdisk is a real multi-arch manifest, so this same config works unmodified on x86_64 Linux/macOS hosts too, not just Apple Silicon (only actually tested on aarch64 macOS so far — same HVF-equivalent acceleration path as the plain-QEMU recipe above) |
+| `tank-os-vz.yaml` | Apple `Virtualization.framework` | macOS Apple Silicon only (untested on Intel Macs) — no firmware files to manage; networked over vsock instead of usermode NAT |
+| `tank-os-krunkit.yaml` | krunkit (libkrun) | macOS Apple Silicon only (untested on Intel Macs) — keeps the whole stack on the same hypervisor family this repo's own Podman-machine build path already uses |
 
 All three produced identical guest behavior (cloud-init, hostname,
-OpenClaw/OpenShell bring-up) — pick whichever driver is already installed;
-there's no functional reason to prefer one over another for this image.
+OpenClaw/OpenShell bring-up) on the one configuration actually tested
+(aarch64 macOS) — pick whichever driver is already installed; there's no
+functional reason to prefer one over another for this image.
 
 ```bash
 mkdir -p ~/.lima/_images
-podman create --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
+podman create --replace --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
 podman cp tank-os-extract:/disk/disk.qcow2 ~/.lima/_images/tank-os-disk.qcow2
 podman rm tank-os-extract
 
