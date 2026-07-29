@@ -1,0 +1,43 @@
+# Lima config for booting a tank-os disk pulled from
+# quay.io/redhat-et/tank-os-containerdisk, using Lima's QEMU driver
+# (works on both macOS and Linux hosts). Extract the qcow2 first:
+#
+#   podman create --replace --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
+#   podman cp tank-os-extract:/disk/disk.qcow2 ~/.lima/_images/tank-os-disk.qcow2
+#   podman rm tank-os-extract
+#
+# Then: limactl start --name tank-os ./tank-os-qemu.yaml
+#
+# See tank-os-vz.yaml (Apple Virtualization.framework) and
+# tank-os-krunkit.yaml (libkrun) for macOS-only alternatives -- all three
+# were confirmed working identically on Lima 2.2.0 / macOS M3 (2026-07-28,
+# aarch64 only -- x86_64 hosts are untested but should work the same way,
+# see below).
+# See docs/quickstart-prebuilt.md for the full comparison and caveats.
+#
+# No `arch:` field on purpose -- Lima defaults it to the host's own
+# architecture, matching whatever qcow2 `podman create`/`cp` extracted
+# (quay.io/redhat-et/tank-os-containerdisk is a real multi-arch manifest
+# covering both arm64 and amd64, so this same config and disk-extraction
+# command work unmodified on an x86_64 host too, not just Apple Silicon).
+#
+# tank-os isn't a Lima-aware guest (no lima-guestagent), so this disables
+# mounts and containerd/dockerd provisioning that Lima normally sets up.
+#
+# `limactl start` itself exits non-zero and reports "DEGRADED" because the
+# guest agent never comes up -- that's expected and harmless here, not a
+# real failure. The VM is fully running at that point; `limactl shell
+# tank-os` and plain `ssh` both work. `limactl list` shows STATUS=Running
+# despite the non-zero exit code from `start`.
+vmType: "qemu"
+images:
+  - location: "~/.lima/_images/tank-os-disk.qcow2"
+cpus: 2
+memory: "4GiB"
+disk: "20GiB"
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  loadDotSSHPubKeys: true

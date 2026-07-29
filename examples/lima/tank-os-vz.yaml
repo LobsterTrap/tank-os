@@ -1,0 +1,28 @@
+# Lima config for booting tank-os using Apple's native Virtualization.framework
+# (vz) instead of QEMU -- macOS only, no HVF/QEMU firmware setup needed.
+# See tank-os-qemu.yaml for the image-extraction step and shared notes;
+# this file differs in `vmType` and in pinning `arch: "aarch64"` explicitly
+# (tank-os-qemu.yaml leaves `arch` unset since it's the one driver here
+# that's genuinely portable across host architectures -- vz is
+# Apple-Silicon-only regardless, so pinning it here is just documentation,
+# not a behavior difference).
+#
+# Confirmed working on Lima 2.2.0 / macOS M3 (2026-07-28): identical guest
+# behavior to the qemu variant (cloud-init, hostname, OpenClaw/OpenShell
+# bring-up), networked over vsock instead of QEMU's usermode NAT. Same
+# expected "DEGRADED" exit from `limactl start` -- see tank-os-qemu.yaml's
+# comment and docs/quickstart-prebuilt.md.
+vmType: "vz"
+arch: "aarch64"
+images:
+  - location: "~/.lima/_images/tank-os-disk.qcow2"
+    arch: "aarch64"
+cpus: 2
+memory: "4GiB"
+disk: "20GiB"
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  loadDotSSHPubKeys: true

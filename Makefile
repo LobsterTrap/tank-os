@@ -18,6 +18,11 @@ OPENSHELL_VERSION ?= 0.0.92
 # a different destination (e.g. a fork's own registry).
 IMAGE_OPENCLAW_OPENSHELL_URI ?= quay.io/redhat-et/tank-claw-openshell
 
+# KubeVirt containerDisk (wraps out-tank-os/qcow2/disk.qcow2, see
+# deploy/containerdisk/Containerfile) -- override if you're publishing to
+# a different registry.
+IMAGE_CONTAINERDISK_URI ?= quay.io/redhat-et/tank-os-containerdisk
+
 # Auto-detect architecture
 UNAME_ARCH := $(shell uname -m)
 ifeq ($(UNAME_ARCH),x86_64)
@@ -61,6 +66,9 @@ help:
 	@echo "  build          Build the bootc container image locally"
 	@echo "  push           Push the image to registry (requires IMAGE_REGISTRY and IMAGE_NAMESPACE)"
 	@echo "  build-qcow2    Build a QCOW2 disk image using bootc-image-builder"
+	@echo "  build-containerdisk  Wrap the qcow2 as a KubeVirt containerDisk (run build-qcow2 first)"
+	@echo "  push-containerdisk   Push it to IMAGE_CONTAINERDISK_URI:latest (single-arch, see WARNING)"
+	@echo "  push-containerdisk-arch  Push it to IMAGE_CONTAINERDISK_URI:\$$(ARCH), safe for multi-arch merge"
 	@echo "  build-iso      Build an ISO installer using bootc-image-builder"
 	@echo "  lint           Run bootc container lint (if available)"
 	@echo "  verify         Verify image signature with cosign (if COSIGN_PUBLIC_KEY is set)"
@@ -71,6 +79,7 @@ help:
 	@echo "  PLATFORM:        $(PLATFORM)"
 	@echo "  IMAGE_URI:       $(IMAGE_URI)"
 	@echo "  IMAGE_OPENCLAW_OPENSHELL_URI: $(IMAGE_OPENCLAW_OPENSHELL_URI)"
+	@echo "  IMAGE_CONTAINERDISK_URI: $(IMAGE_CONTAINERDISK_URI)"
 	@echo "  OPENCLAW_REF:    $(OPENCLAW_REF)"
 	@echo "  OPENSHELL_VERSION: $(OPENSHELL_VERSION)"
 	@echo "  IMAGE_REGISTRY:  $(IMAGE_REGISTRY)"
@@ -135,6 +144,47 @@ build-qcow2:
 		--rootfs xfs \
 		--config /config.toml
 
+# KubeVirt containerDisk -- run this AFTER build-qcow2, it wraps that
+# target's output (out-tank-os/qcow2/disk.qcow2). See
+# docs/openshift-virtualization.md for the full pipeline.
+.PHONY: build-containerdisk
+build-containerdisk:
+	@if [ ! -f "out-tank-os/qcow2/disk.qcow2" ]; then \
+		echo "Error: out-tank-os/qcow2/disk.qcow2 not found. Run 'make build-qcow2' first."; \
+		exit 1; \
+	fi
+	cp out-tank-os/qcow2/disk.qcow2 deploy/containerdisk/disk.qcow2
+	podman build --platform $(PLATFORM) \
+		-t $(IMAGE_CONTAINERDISK_URI):latest \
+		-f deploy/containerdisk/Containerfile deploy/containerdisk
+	rm -f deploy/containerdisk/disk.qcow2
+
+.PHONY: push-containerdisk
+push-containerdisk:
+	@echo "WARNING: $(IMAGE_CONTAINERDISK_URI):latest is expected to be a"; \
+	echo "multi-arch manifest list. This target pushes a single-arch"; \
+	echo "($(ARCH)) image straight to that tag, which silently REPLACES the"; \
+	echo "manifest list with a single-arch image -- breaking every other"; \
+	echo "architecture's pull. If you're updating the shared published"; \
+	echo "image, push each arch under its own tag instead and merge with"; \
+	echo "'podman manifest create/add' + 'push --all' -- see"; \
+	echo "docs/openshift-virtualization.md's \"Publishing a multi-arch"; \
+	echo "containerdisk\" section. Only push straight to :latest for a"; \
+	echo "personal single-arch build you don't intend anyone else to pull."
+	podman push $(IMAGE_CONTAINERDISK_URI):latest
+
+# Safe building block for publishing a multi-arch containerdisk -- pushes
+# under an arch-specific tag instead of :latest, so it can never clobber
+# the published manifest list. Run on each architecture's own native
+# host, then merge the resulting tags into a manifest list with `podman
+# manifest create`/`push --all` -- see
+# docs/openshift-virtualization.md's "Publishing a multi-arch
+# containerdisk" section for the exact commands.
+.PHONY: push-containerdisk-arch
+push-containerdisk-arch:
+	podman tag $(IMAGE_CONTAINERDISK_URI):latest $(IMAGE_CONTAINERDISK_URI):$(ARCH)
+	podman push $(IMAGE_CONTAINERDISK_URI):$(ARCH)
+
 .PHONY: build-iso
 build-iso:
 	@if [ ! -f "config.toml" ]; then \
@@ -186,3 +236,4 @@ verify:
 .PHONY: clean
 clean:
 	rm -rf out-tank-os
+	rm -f deploy/containerdisk/disk.qcow2
