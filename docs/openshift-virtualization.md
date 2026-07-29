@@ -86,8 +86,20 @@ make build IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et     # tags quay.io/r
 make push IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et      # publishes the bootc image itself
 make build-qcow2 IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et   # produces out-tank-os/qcow2/disk.qcow2
 make build-containerdisk         # wraps it (needs the qcow2 above first)
-make push-containerdisk
+make push-containerdisk-arch     # pushes under :$(ARCH), NOT plain :latest -- see below
 ```
+
+The example above targets `quay.io/redhat-et` — the real shared namespace
+these images are published under — so it deliberately uses
+`push-containerdisk-arch` rather than plain `push-containerdisk`:
+`quay.io/redhat-et/tank-os-containerdisk:latest` is a real multi-arch
+manifest list, and pushing a single-arch build straight to that tag would
+silently replace it, breaking every other architecture's pull. Finish the
+publish with the manifest-merge steps in "Publishing a multi-arch
+containerdisk" below. If you're instead pushing to your own personal
+`IMAGE_REGISTRY`/`IMAGE_NAMESPACE` override with no existing multi-arch
+manifest to protect, plain `make push-containerdisk` (straight to
+`:latest`) is simpler and fine.
 
 All three registry repos (`tank-os`, `tank-claw-openshell`,
 `tank-os-containerdisk`) already exist under `quay.io/redhat-et` with
@@ -154,9 +166,12 @@ kustomize build deploy/base                    # confirms the base renders as va
 oc apply --dry-run=client -f deploy/applicationset.yaml   # confirms the ApplicationSet YAML itself is well-formed
 ```
 
-Full KubeVirt CRD schema validation (confirming `VirtualMachine`'s fields
-are actually valid per the CRD, not just valid YAML) needs a live cluster
-with the KubeVirt CRDs installed — not attempted here.
+These two commands are what's checkable *without* a live cluster (`oc
+apply --dry-run=client` only validates well-formed YAML, not the actual
+`VirtualMachine` CRD schema). Full CRD schema validation needed a real
+cluster with KubeVirt installed — that gap is closed; see "First real
+cluster test" below for the live `oc apply --dry-run=server` and full
+deploy results.
 
 The JSON6902 patch in `applicationset.yaml` was verified by hand: copied
 `deploy/base/virtualmachine.yaml` into a scratch directory, wrote the same

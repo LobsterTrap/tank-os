@@ -2,7 +2,7 @@
 # quay.io/redhat-et/tank-os-containerdisk, using Lima's QEMU driver
 # (works on both macOS and Linux hosts). Extract the qcow2 first:
 #
-#   podman create --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
+#   podman create --replace --name tank-os-extract quay.io/redhat-et/tank-os-containerdisk:latest
 #   podman cp tank-os-extract:/disk/disk.qcow2 ~/.lima/_images/tank-os-disk.qcow2
 #   podman rm tank-os-extract
 #

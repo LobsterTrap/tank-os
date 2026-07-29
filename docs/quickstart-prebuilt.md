@@ -240,7 +240,10 @@ limactl shell tank-os
 ```
 
 (Swap in `tank-os-qemu.yaml` or `tank-os-krunkit.yaml` for a different
-driver — only `vmType` differs between the three files.)
+driver. `tank-os-vz.yaml`/`tank-os-krunkit.yaml` also pin `arch: "aarch64"`
+explicitly, since both are Apple-Silicon-only anyway; `tank-os-qemu.yaml`
+leaves `arch` unset instead, since QEMU is the one driver here that's
+genuinely portable across host architectures — see the table above.)
 
 What actually happens, and what to expect:
 
