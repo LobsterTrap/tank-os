@@ -147,25 +147,55 @@ Reboots into tank-os in place. Future updates: `sudo bootc upgrade --apply`.
 
 **Not yet a bootc host** (e.g. a regular Fedora Workstation/Server, or an
 empty VM) — boot the extracted qcow2 directly with `virt-install`, which
-Fedora ships by default:
+Fedora/RHEL ship by default:
 
 ```bash
-sudo virt-install \
+virt-install \
+  --connect qemu:///session \
   --name tank-os \
   --memory 4096 \
   --vcpus 2 \
   --disk ./tank-os-disk.qcow2,format=qcow2,bus=virtio \
   --import \
   --os-variant fedora-unknown \
-  --network network=default \
+  --network user,backend.type=passt,portForward0.proto=tcp,portForward0.range0.start=2222,portForward0.range0.to=22 \
   --graphics none \
-  --console pty,target_type=serial
+  --console pty,target_type=serial \
+  --cloud-init user-data=./user-data,meta-data=./meta-data \
+  --noautoconsole
 ```
+
+Verified on RHEL 10.2: `ssh -p 2222 openclaw@localhost` worked using a key
+from `--cloud-init` that was never baked into the image, and `virsh
+--connect qemu:///session console tank-os` attaches to the serial console.
+
+Two things this fixes that the obvious version of this command gets wrong:
+
+- **`--connect qemu:///session` instead of `sudo` + the default
+  `qemu:///system`.** With `qemu:///system`, libvirt runs QEMU as the
+  unprivileged system `qemu` user, which can't read a disk image anywhere
+  under your home directory if it's mode `700` (RHEL's default) — you'd
+  hit `Cannot access ... Permission denied` regardless of the disk's own
+  file permissions, since the *directory* itself blocks traversal.
+  `qemu:///session` runs QEMU as your own user instead, sidestepping the
+  problem entirely — no `sudo`, no moving the disk into
+  `/var/lib/libvirt/images/`.
+- **`--network user,backend.type=passt,portForward0...` instead of
+  `--network network=default`.** `network=default` is a system-level
+  virtual network only available under `qemu:///system` — under
+  `qemu:///session` there's no bridge to attach to, so it fails
+  immediately. `backend.type=passt` (the `passt` package; usually
+  preinstalled) plus explicit `portForward0.*` options gives usermode
+  networking with host port forwarding, the session-mode equivalent of
+  raw QEMU's `-netdev user,hostfwd=...`.
 
 Or use the repo's portable QEMU script (`examples/boot-tank-os-qemu.sh`) the
 same way `docs/build.md`'s "Launch on Linux (QEMU)" section describes, again
 pointing it at `./tank-os-disk.qcow2` instead of a fresh
-`out-tank-os/qcow2/disk.qcow2`.
+`out-tank-os/qcow2/disk.qcow2` — confirmed working as-is on RHEL 10.2,
+auto-detecting both `/usr/libexec/qemu-kvm` (RHEL has no separate
+`qemu-system-x86_64` binary) and `/usr/share/edk2/ovmf` (RHEL's OVMF path)
+with no manual `QEMU_BIN`/`OVMF_CODE` overrides needed.
 
 ## Lima (macOS/Linux)
 
