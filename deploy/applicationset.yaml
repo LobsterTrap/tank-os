@@ -3,14 +3,24 @@
 # hostname). To add a user, add one entry to the List generator below --
 # no new files, no new directories. See docs/openshift-virtualization.md.
 #
-# NOT YET DEPLOYED/TESTED against a live cluster -- see that doc's
-# "first real cluster test" checklist before relying on this.
+# Confirmed working on a live OpenShift GitOps install (2026-07-29) -- see
+# docs/openshift-virtualization.md's "First real cluster test" section for
+# what was verified and the one known gap (namespace cleanup on removal).
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
   name: tank-os
   namespace: openshift-gitops
 spec:
+  # Required for the {{.user}} (dot-prefixed) syntax used throughout this
+  # template -- without this, the ApplicationSet controller falls back to
+  # its legacy "fasttemplate" engine, which doesn't recognize {{.user}} at
+  # all and renders it as literal text. Every generated Application then
+  # gets the exact same literal name ("tank-os-{{.user}}"), which ArgoCD
+  # rejects with "contains applications with duplicate name" -- confirmed
+  # by hitting this exact error on a real cluster before adding this line.
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
   generators:
     - list:
         elements:

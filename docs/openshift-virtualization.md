@@ -159,28 +159,56 @@ Confirmed so far, on a live OpenShift Virtualization 4.21.13 cluster
   variants on a native x86_64 host and re-testing after the manifest-list
   fix.
 
-Still to do — the ArgoCD `ApplicationSet` path itself:
+The ArgoCD `ApplicationSet` path itself is now also confirmed, same
+cluster and session:
 
-1. Confirm OpenShift GitOps (ArgoCD) is installed: `oc get csv -A | grep -i
-   gitops` (namespace varies by install — don't hardcode
-   `openshift-gitops-operator`, check for it).
-2. Replace `REPLACE_WITH_YOUR_PUBLIC_KEY` in
-   `deploy/applicationset.yaml`'s patch (and in `deploy/base/virtualmachine.yaml`,
-   used only if the patch doesn't apply for some element) with a real key.
-3. Update `deploy/applicationset.yaml`'s `repoURL`/`targetRevision` to
-   point at wherever these manifests actually live (currently `main` on
-   `LobsterTrap/tank-os.git`, which won't have `deploy/` until this PR
-   merges) — or target this branch directly for a pre-merge test.
-4. `oc apply -f deploy/applicationset.yaml` and watch
-   `oc get applications -n openshift-gitops` for sync health.
-5. Confirm the namespaces (`tank-alice`, `tank-bob`, ...) were created
-   and each has a `VirtualMachine`/`VirtualMachineInstance` reaching
-   `Running`.
-6. SSH into one VM (via `virtctl port-forward`, see above) and confirm
-   `hostname` matches (`tank-alice`, not `tank`) and OpenClaw/OpenShell
-   come up the same way verified in `docs/openshell.md`'s manual test.
-7. Edit the `ApplicationSet` to add a throwaway test user, confirm ArgoCD
-   creates the new `Application`/namespace/VM without touching the
-   existing ones, then remove it again to confirm cleanup
-   (`prune: true` should delete the namespace's resources — verify it
-   doesn't orphan anything).
+- [x] OpenShift GitOps was already installed on this cluster
+  (`oc get pods -n openshift-gitops` showed a healthy ArgoCD install; the
+  operator's CSV turned up in `openshift-virtualization-os-images`, not
+  the `openshift-gitops-operator` namespace the original checklist
+  guessed — namespace really does vary by install, don't hardcode it).
+- [x] `oc apply -f deploy/applicationset.yaml` (real key substituted,
+  `targetRevision` pointed at this branch pre-merge) generated
+  `tank-os-alice`/`tank-os-bob` `Application`s, each creating its own
+  namespace and a `VirtualMachine` reaching `Running`/`Ready`.
+- [x] SSH into both (`virtctl port-forward`) confirmed `hostname` is
+  `tank-alice`/`tank-bob` respectively, not `tank` — the JSON6902 patch's
+  per-user substitution is correct end to end through ArgoCD's own
+  Go-template rendering, not just the manual dry-run simulation done
+  earlier.
+- [x] Adding a throwaway `carol` entry to the List generator: ArgoCD
+  created `tank-os-carol`/namespace `tank-carol`/VM `tank-carol` without
+  touching `alice`/`bob`.
+- [x] Removing `carol` again: ArgoCD pruned the `Application` and
+  everything it tracked inside `tank-carol` (the VM, etc.) — see the bug
+  and the known gap below for what this step actually surfaced.
+
+**Bug found and fixed: `goTemplate: true` is required.** The manifest
+uses dot-prefixed Go-template syntax (`{{.user}}`) throughout, but this
+cluster's ApplicationSet controller doesn't default to that engine —
+without `spec.goTemplate: true`, it falls back to a legacy templating mode
+that doesn't recognize `{{.user}}` at all and renders it as literal text.
+Every generated `Application` then got the identical literal name
+`tank-os-{{.user}}`, which ArgoCD rejected outright: `ApplicationSet
+tank-os contains applications with duplicate name: tank-os-{{.user}}`.
+Fixed by adding `goTemplate: true` (plus the recommended
+`goTemplateOptions: ["missingkey=error"]`, so a real typo in a template
+key fails loudly instead of silently rendering `<no value>`).
+
+**Known gap, not yet fixed: removing a user leaves an empty namespace
+behind.** After pruning `carol`'s `Application`, `tank-carol` the
+*namespace* stayed `Active` with zero resources in it — confirmed it
+wasn't just mid-termination (checked again after 20+ seconds, still
+`Active`). This is standard ArgoCD behavior, not a misconfiguration:
+`CreateNamespace=true` is a sync-time side effect, not a resource ArgoCD
+tracks and therefore not something `prune: true` cleans up. Cleaned it up
+manually (`oc delete namespace tank-carol`) for this test. Removing users
+at any real scale will accumulate empty leftover namespaces unless this
+gets addressed — options worth evaluating later: an ArgoCD
+`PreDelete`/`resource-hook`-based cleanup Job, a periodic sweep for
+empty `tank-*` namespaces, or declaring the `Namespace` object as an
+actual tracked resource in `deploy/base/` instead of relying on
+`CreateNamespace=true` (trades one problem for needing per-user
+Kustomize overlays instead of a single shared base, which is exactly the
+"N checked-in files" this architecture was designed to avoid — not a
+clear win, worth thinking through rather than doing reflexively).
