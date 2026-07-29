@@ -44,10 +44,18 @@ echo "CPU Cores: $QEMU_SMP"
 echo "SSH Port: localhost:$SSH_PORT"
 echo ""
 
-# Check QEMU availability
+# Check QEMU availability. RHEL doesn't ship a separate qemu-system-x86_64
+# binary -- its qemu-kvm package only installs /usr/libexec/qemu-kvm -- so
+# fall back to that if the default name isn't found, instead of requiring
+# QEMU_BIN=/usr/libexec/qemu-kvm to be set manually every time.
 if ! command -v "$QEMU_BIN" &> /dev/null; then
-    echo -e "${RED}ERROR: $QEMU_BIN not found. Install QEMU and retry.${NC}"
-    exit 1
+    if [[ "$QEMU_BIN" == "qemu-system-x86_64" ]] && command -v /usr/libexec/qemu-kvm &> /dev/null; then
+        echo -e "${YELLOW}-> qemu-system-x86_64 not found; using /usr/libexec/qemu-kvm (RHEL)${NC}"
+        QEMU_BIN="/usr/libexec/qemu-kvm"
+    else
+        echo -e "${RED}ERROR: $QEMU_BIN not found. Install QEMU and retry.${NC}"
+        exit 1
+    fi
 fi
 
 # Detect OVMF firmware files
