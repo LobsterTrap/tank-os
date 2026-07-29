@@ -31,10 +31,74 @@ Linux hosts directly. For x86_64, either build locally
 images to also push an amd64-tagged containerdisk; a single tag can only hold
 one architecture's disk.
 
-The SSH keys and OpenClaw/OpenShell config already baked into `tank-os:latest`
-came from whatever `config.toml` was used at containerdisk build time — check
-with whoever published it, or expect to need your own build if you need a
-different key.
+The SSH key already baked into the published qcow2 belongs to whoever built
+and pushed it — you almost certainly don't have that private key, so plain
+`ssh openclaw@...` against the shared image will just hang/refuse. See "Use
+your own SSH key" below before trying to connect.
+
+## Use your own SSH key instead of the baked-in one
+
+A shared, published disk image can only have one SSH key baked in at build
+time (via `config.toml`'s `[[customizations.user]]`, see `docs/build.md`) —
+fine for a private build, useless for anyone else pulling the same
+published image. The fix isn't to rebuild the image per person (that
+defeats the point of publishing one shared containerdisk); it's to inject
+your own key at **boot time** instead, via a small cloud-init NoCloud seed
+ISO attached alongside the disk. This is the same mechanism Lima uses to
+give every instance its own key without baking anything into its shared
+base images, and the same `cloudInitNoCloud` shape already used for
+per-user VMs in `deploy/base/virtualmachine.yaml`.
+
+Reuse this repo's existing cloud-config (already shaped for the pre-existing
+`openclaw` user — cloud-init adds your key to that user's
+`authorized_keys`, it doesn't need to recreate the user):
+
+```bash
+cp examples/cloud-init/openclaw-user-data.yaml ./user-data
+python3 -c "
+import pathlib
+key = pathlib.Path.home().joinpath('.ssh/id_ed25519.pub').read_text().strip()
+p = pathlib.Path('user-data')
+p.write_text(p.read_text().replace('ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-os', key))
+"
+
+cat > ./meta-data <<'EOF'
+instance-id: tank-os-quickstart
+local-hostname: tank
+EOF
+```
+
+Then build a `cidata`-labeled seed ISO from those two files — pick whichever
+tool you already have:
+
+```bash
+# Linux, if cloud-utils/cloud-image-utils is installed:
+cloud-localds seed.iso user-data meta-data
+
+# Linux or macOS, if genisoimage/mkisofs/cdrtools is installed:
+genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
+
+# macOS, no extra installs needed (built-in hdiutil):
+mkdir -p seed && cp user-data meta-data seed/
+hdiutil makehybrid -iso -joliet -default-volume-name cidata -o seed.iso seed
+```
+
+Then attach `seed.iso` as one more `-drive` in whichever QEMU invocation
+you're using below:
+
+```bash
+-drive file=seed.iso,format=raw,if=virtio
+```
+
+Verified end to end this way (macOS/aarch64, QEMU+HVF): SSH succeeded using
+a key that was never part of the image at all, added purely through the
+seed ISO — confirming this works regardless of whatever key the image's
+builder baked in.
+
+`virt-install` (Fedora Linux, below) has this built in — pass
+`--cloud-init user-data=./user-data,meta-data=./meta-data` instead of
+building the ISO by hand; virt-install generates the same kind of seed
+image itself.
 
 ## macOS (Apple Silicon) via QEMU
 
@@ -56,13 +120,16 @@ qemu-system-aarch64 \
   -drive file=./tank-os-disk.qcow2,format=qcow2,if=virtio \
   -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
   -drive if=pflash,format=raw,file=./edk2-arm-vars.fd \
+  -drive file=./seed.iso,format=raw,if=virtio \
   -device virtio-net-pci,netdev=net0 \
   -netdev user,id=net0,hostfwd=tcp::2222-:22 \
   -nographic
 ```
 
 Requires `brew install qemu`. SSH once booted: `ssh -p 2222 openclaw@localhost`
-(assuming the published image's baked-in key matches yours).
+using **your own key** from `seed.iso` above — drop the `-drive
+file=./seed.iso,...` line entirely if you already know the published
+image's baked-in key matches yours (e.g. you built it yourself).
 
 ## Fedora Linux
 
