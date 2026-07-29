@@ -314,10 +314,20 @@ qemu-system-aarch64 \
   -pidfile out-tank-os/qcow2/qemu.pid
 ```
 
-Your prompt returns right away. From there:
+Your prompt returns right away, but the VM itself still takes a few seconds
+to boot — SSH won't be up yet. Check whether it's reached the login prompt
+before trying to connect:
 
 ```bash
-ssh -p 2222 openclaw@localhost      # once cloud-init/sshd are up
+grep "login:" out-tank-os/qcow2/console.log
+```
+
+No output means it's still booting; re-run the `grep` (or poll it:
+`until grep -q "login:" out-tank-os/qcow2/console.log 2>/dev/null; do sleep 1; done`)
+until it matches, then:
+
+```bash
+ssh -p 2222 openclaw@localhost
 tail -f out-tank-os/qcow2/console.log   # if you need to watch boot progress
 kill "$(cat out-tank-os/qcow2/qemu.pid)"   # to shut the VM down
 ```
