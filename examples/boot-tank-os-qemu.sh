@@ -49,7 +49,7 @@ echo ""
 # fall back to that if the default name isn't found, instead of requiring
 # QEMU_BIN=/usr/libexec/qemu-kvm to be set manually every time.
 if ! command -v "$QEMU_BIN" &> /dev/null; then
-    if [[ "$QEMU_BIN" == "qemu-system-x86_64" ]] && command -v /usr/libexec/qemu-kvm &> /dev/null; then
+    if [[ "$(basename "$QEMU_BIN")" == "qemu-system-x86_64" ]] && [[ -x /usr/libexec/qemu-kvm ]]; then
         echo -e "${YELLOW}-> qemu-system-x86_64 not found; using /usr/libexec/qemu-kvm (RHEL)${NC}"
         QEMU_BIN="/usr/libexec/qemu-kvm"
     else
