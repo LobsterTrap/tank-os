@@ -18,7 +18,7 @@ Skip this section if you want to build a disk image directly from the published
 image:
 
 ```text
-quay.io/sallyom/tank-os:latest
+quay.io/redhat-et/tank-os:latest
 ```
 
 That image is published for both `arm64` and `amd64`, so Podman Desktop or
@@ -56,12 +56,12 @@ make build FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:<tag>
 ## Build A Disk Image With Podman Desktop
 
 The Podman Desktop BootC extension can build a VM disk image from
-`localhost/tank-os:latest` or the published `quay.io/sallyom/tank-os:latest`.
+`localhost/tank-os:latest` or the published `quay.io/redhat-et/tank-os:latest`.
 
 Recommended local test settings on Apple Silicon:
 
 - Bootc image: `localhost/tank-os:latest`
-- Or published image: `quay.io/sallyom/tank-os:latest`
+- Or published image: `quay.io/redhat-et/tank-os:latest`
 - Disk image type: `qcow2`
 - Target architecture: `arm64` or `aarch64`
 - Root filesystem: `xfs`
@@ -333,7 +333,7 @@ After pushing a new bootc image, switch the VM to the registry ref:
 
 ```bash
 sudo bootc status
-sudo bootc switch --apply quay.io/sallyom/tank-os:latest
+sudo bootc switch --apply quay.io/redhat-et/tank-os:latest
 ```
 
 After the reboot, future updates against the same tracked tag can use:
