@@ -131,6 +131,23 @@ out-tank-os/qcow2/disk.qcow2
 On macOS with Podman Desktop, use the rootful Podman machine connection because
 bootc-image-builder needs privileged access to the container storage.
 
+**On a bare Linux host (RHEL, Fedora Workstation/Server, etc. — no Podman
+Desktop/machine layer)**: `build-qcow2`'s `--local` flag and its
+`-v /var/lib/containers/storage:/var/lib/containers/storage` bind-mount both
+require *rootful* Podman, and `--privileged` alone doesn't make a rootless
+invocation rootful — bootc-image-builder checks that the outer `podman`
+command itself is rootful, not just that the container it launches runs
+privileged. If you built the image as your own user (the Makefile's default,
+rootless Podman), `sudo make build-qcow2` alone will still fail to find it:
+rootless and rootful Podman keep entirely separate image storage
+(`sudo podman images` and `podman images` show different lists on the same
+host). Build and run both steps as root instead:
+
+```bash
+sudo make build
+sudo make build-qcow2
+```
+
 ## Makefile Targets
 
 Common targets:
