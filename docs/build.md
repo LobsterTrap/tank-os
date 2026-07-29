@@ -221,6 +221,19 @@ qemu-system-x86_64 \
   -nographic
 ```
 
+**Exiting `-nographic`**: this attaches the VM's serial console directly to
+your terminal, which is what's showing the login prompt — it isn't hung, it's
+working as intended. QEMU's own escape sequence (not SSH's `~.`, which only
+applies inside an actual SSH session) is `Ctrl-A` followed by a command key:
+
+- `Ctrl-A x` — quit QEMU
+- `Ctrl-A c` — toggle between the serial console and the QEMU monitor
+- `Ctrl-A h` — list all escape commands
+
+If you don't need the console at all (e.g. you're only going to SSH in via
+the forwarded port), see "Run without attaching a console" below instead of
+using `-nographic`.
+
 **Note**: OVMF paths vary by distribution. Common locations:
 - `/usr/share/OVMF/OVMF_CODE_4M.fd` or `/usr/share/OVMF/OVMF_CODE.fd` (Red Hat, Fedora, openSUSE, Debian, Ubuntu)
 - `/usr/share/ovmf/OVMF_CODE_4M.fd` or `/usr/share/ovmf/OVMF_CODE.fd` (Debian, Ubuntu)
@@ -275,6 +288,44 @@ Notes:
   breaks the connection to your own Podman machine instead of granting
   privilege. If `podman machine` isn't already rootful, recreate it or
   run `podman machine set --rootful` (may require a machine restart).
+
+### Run without attaching a console
+
+If you only need SSH access (via the forwarded port) and don't want QEMU to
+take over your terminal, replace `-nographic` with `-display none` plus
+`-daemonize` — QEMU detaches into the background immediately instead of
+attaching the serial console to your shell:
+
+```bash
+qemu-system-aarch64 \
+  -M virt,highmem=on \
+  -accel hvf \
+  -cpu host \
+  -smp 2 \
+  -m 4096 \
+  -drive file=out-tank-os/qcow2/disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
+  -drive if=pflash,format=raw,file=out-tank-os/qcow2/edk2-arm-vars.fd \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -display none \
+  -serial file:out-tank-os/qcow2/console.log \
+  -daemonize \
+  -pidfile out-tank-os/qcow2/qemu.pid
+```
+
+Your prompt returns right away. From there:
+
+```bash
+ssh -p 2222 openclaw@localhost      # once cloud-init/sshd are up
+tail -f out-tank-os/qcow2/console.log   # if you need to watch boot progress
+kill "$(cat out-tank-os/qcow2/qemu.pid)"   # to shut the VM down
+```
+
+(This same `-display none -daemonize -serial file:... -pidfile ...`
+substitution works on the Linux invocation above too — it isn't
+aarch64/macOS-specific, just documented here since it's what came up while
+testing this section.)
 
 ## Upgrade A Running VM
 
