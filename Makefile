@@ -15,7 +15,7 @@ IMAGE_OPENCLAW_OPENSHELL_URI ?= quay.io/redhat-et/tank-claw-openshell
 
 # KubeVirt containerDisk (wraps out-tank-os/qcow2/disk.qcow2, see
 # deploy/containerdisk/Containerfile) -- override if you're publishing to
-# a different registry. This repo doesn't exist until you create it.
+# a different registry.
 IMAGE_CONTAINERDISK_URI ?= quay.io/redhat-et/tank-os-containerdisk
 
 # Auto-detect architecture

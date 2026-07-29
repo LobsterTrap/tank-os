@@ -4,11 +4,14 @@ This packages tank-os as a KubeVirt `containerDisk` and automates
 per-user VM provisioning via ArgoCD, so onboarding a user means adding
 one line to a list, not manually creating a VM.
 
-**Status: authored, not yet deployed against a live cluster.** No
-OpenShift Virtualization (CNV)-capable cluster with bare-metal nodes was
-available while writing this (same gap as the original smoke test — see
-`tank-os-smoke-test-summary.md`). Everything below has been validated
-locally (`kustomize build`, manual patch-rendering simulation, `oc apply
+**Status: images published, not yet deployed against a live cluster.**
+`quay.io/redhat-et/tank-os`, `tank-claw-openshell`, and
+`tank-os-containerdisk` are all built and pushed (public read, confirmed
+via anonymous pull). No OpenShift Virtualization (CNV)-capable cluster
+with bare-metal nodes was available while writing this (same gap as the
+original smoke test — see `tank-os-smoke-test-summary.md`), so the
+`deploy/` manifests themselves have only been validated locally
+(`kustomize build`, manual patch-rendering simulation, `oc apply
 --dry-run=client`), not against a real ArgoCD/KubeVirt install. See "First
 real cluster test" at the end for what to run the moment cluster access
 exists.
@@ -38,15 +41,22 @@ user, so per-VM values can only be injected at deploy time.
 ## Building and publishing the containerDisk
 
 ```bash
-make build-qcow2                 # produces out-tank-os/qcow2/disk.qcow2
+make build IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et     # tags quay.io/redhat-et/tank-os:latest
+make push IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et      # publishes the bootc image itself
+make build-qcow2 IMAGE_REGISTRY=quay.io IMAGE_NAMESPACE=redhat-et   # produces out-tank-os/qcow2/disk.qcow2
 make build-containerdisk         # wraps it (needs the qcow2 above first)
-make push-containerdisk          # needs IMAGE_CONTAINERDISK_URI to actually exist as a repo
+make push-containerdisk
 ```
 
-`IMAGE_CONTAINERDISK_URI` defaults to `quay.io/redhat-et/tank-os-containerdisk`
-— that repo doesn't exist yet. Create it the same way as
-`tank-claw-openshell` earlier (public read, robot account push) before
-running `push-containerdisk` for real.
+All three registry repos (`tank-os`, `tank-claw-openshell`,
+`tank-os-containerdisk`) already exist under `quay.io/redhat-et` with
+public read and robot-account push access. Publishing the bootc `tank-os`
+image itself isn't required for `build-qcow2` to work (that target reads
+from local Podman storage via `--local`), but it's what makes
+`bootc switch`/`bootc upgrade` in-place updates possible on already-running
+VMs (see `docs/build.md`'s "Upgrade A Running VM"), and lets this whole
+pipeline be reproduced from a different machine or CI runner instead of
+requiring the exact local build state.
 
 ## Adding a user
 
