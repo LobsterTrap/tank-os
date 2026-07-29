@@ -1,5 +1,7 @@
 [Unit]
 Description=OpenClaw gateway (rootless Podman)
+After=openshell-gateway.service
+Wants=openshell-gateway.service
 
 [Container]
 Image=ghcr.io/openclaw/openclaw:latest
@@ -7,19 +9,20 @@ ContainerName=openclaw
 Pull=newer
 RunInit=true
 UserNS=keep-id
+Network=host
 User=%U:%G
 Volume=%h/.openclaw:/home/node/.openclaw:Z
 Environment=HOME=/home/node
 Environment=TERM=xterm-256color
 Environment=NPM_CONFIG_CACHE=/home/node/.openclaw/.npm
 Environment=OPENCLAW_NO_RESPAWN=1
-PublishPort=127.0.0.1:18789:18789
-PublishPort=127.0.0.1:18790:18790
+EnvironmentFile=%h/.openclaw/openclaw.env
 Exec=node dist/index.js gateway --allow-unconfigured --bind lan --port 18789
 
 [Service]
 ExecStartPre=/usr/libexec/tank-os/bootstrap-openclaw
-TimeoutStartSec=300
+ExecStartPre=/usr/libexec/tank-os/bootstrap-openshell-sandbox
+TimeoutStartSec=900
 Restart=on-failure
 
 [Install]

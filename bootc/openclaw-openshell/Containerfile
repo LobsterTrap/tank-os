@@ -1,0 +1,44 @@
+# Derived OpenClaw image with an SSH client and the openshell CLI layered
+# on top, so OpenClaw's native `backend: "openshell"` sandbox plugin can
+# shell out to `openshell` and open an SSH session into the resulting
+# sandbox. The actual openshell-gateway daemon runs on the VM host (see
+# bootc/Containerfile and openshell-gateway.service), not in this
+# container -- this image only needs the CLI, not the gateway, since the
+# CLI talks to the host gateway over the network
+# (plugins.entries.openshell.config.gatewayEndpoint).
+#
+# Built and published separately from the main tank-os image (see
+# Makefile's build-openclaw-openshell/push-openclaw-openshell targets);
+# bootc/Containerfile's OPENCLAW_OPENSHELL_IMAGE build arg must point at
+# wherever this ends up published.
+
+ARG OPENCLAW_REF=2026.7.1
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_REF}
+
+# Pinned to the same tagged OpenShell release installed on the VM host in
+# bootc/Containerfile -- keep these two in sync.
+ARG OPENSHELL_VERSION=0.0.92
+ARG TARGETARCH
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssh-client ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      arm64) musl_arch=aarch64 ;; \
+      amd64) musl_arch=x86_64 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    asset="openshell-${musl_arch}-unknown-linux-musl.tar.gz"; \
+    base_url="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}"; \
+    curl -fsSL -o "/tmp/${asset}" "${base_url}/${asset}"; \
+    curl -fsSL -o /tmp/openshell-checksums-sha256.txt "${base_url}/openshell-checksums-sha256.txt"; \
+    (cd /tmp && grep " ${asset}\$" openshell-checksums-sha256.txt | sha256sum -c -); \
+    tar -xzf "/tmp/${asset}" -C /tmp; \
+    install -m 0755 /tmp/openshell /usr/local/bin/openshell; \
+    rm -f "/tmp/${asset}" /tmp/openshell-checksums-sha256.txt /tmp/openshell
+
+USER node

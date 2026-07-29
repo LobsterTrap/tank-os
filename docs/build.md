@@ -18,7 +18,7 @@ Skip this section if you want to build a disk image directly from the published
 image:
 
 ```text
-quay.io/sallyom/tank-os:latest
+quay.io/redhat-et/tank-os:latest
 ```
 
 That image is published for both `arm64` and `amd64`, so Podman Desktop or
@@ -56,12 +56,12 @@ make build FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:<tag>
 ## Build A Disk Image With Podman Desktop
 
 The Podman Desktop BootC extension can build a VM disk image from
-`localhost/tank-os:latest` or the published `quay.io/sallyom/tank-os:latest`.
+`localhost/tank-os:latest` or the published `quay.io/redhat-et/tank-os:latest`.
 
 Recommended local test settings on Apple Silicon:
 
 - Bootc image: `localhost/tank-os:latest`
-- Or published image: `quay.io/sallyom/tank-os:latest`
+- Or published image: `quay.io/redhat-et/tank-os:latest`
 - Disk image type: `qcow2`
 - Target architecture: `arm64` or `aarch64`
 - Root filesystem: `xfs`
@@ -221,6 +221,19 @@ qemu-system-x86_64 \
   -nographic
 ```
 
+**Exiting `-nographic`**: this attaches the VM's serial console directly to
+your terminal, which is what's showing the login prompt — it isn't hung, it's
+working as intended. QEMU's own escape sequence (not SSH's `~.`, which only
+applies inside an actual SSH session) is `Ctrl-A` followed by a command key:
+
+- `Ctrl-A x` — quit QEMU
+- `Ctrl-A c` — toggle between the serial console and the QEMU monitor
+- `Ctrl-A h` — list all escape commands
+
+If you don't need the console at all (e.g. you're only going to SSH in via
+the forwarded port), see "Run without attaching a console" below instead of
+using `-nographic`.
+
 **Note**: OVMF paths vary by distribution. Common locations:
 - `/usr/share/OVMF/OVMF_CODE_4M.fd` or `/usr/share/OVMF/OVMF_CODE.fd` (Red Hat, Fedora, openSUSE, Debian, Ubuntu)
 - `/usr/share/ovmf/OVMF_CODE_4M.fd` or `/usr/share/ovmf/OVMF_CODE.fd` (Debian, Ubuntu)
@@ -228,13 +241,109 @@ qemu-system-x86_64 \
 
 The `_4M` variant is preferred for modern systems; fall back to standard paths if unavailable.
 
+**RHEL note**: RHEL's `/usr/share/OVMF/` only ships `OVMF_CODE.secboot.fd`
+(no plain `OVMF_CODE.fd`), so the auto-detection above won't find it. The
+plain firmware lives at `/usr/share/edk2/ovmf/` instead — pass it
+explicitly: `OVMF_CODE=/usr/share/edk2/ovmf/OVMF_CODE.fd
+OVMF_VARS=/usr/share/edk2/ovmf/OVMF_VARS.fd`.
+
+## Launch on macOS (Apple Silicon, QEMU + HVF)
+
+`examples/boot-tank-os-qemu.sh` doesn't support aarch64 (it hardcodes
+`qemu-system-x86_64` and `-machine q35`, an x86-only machine type) or
+Homebrew's firmware layout, so build an `arm64` disk and invoke QEMU
+directly instead:
+
+```bash
+make build-qcow2 ARCH=arm64
+qemu-img resize out-tank-os/qcow2/disk.qcow2 20G
+
+qemu_share="$(brew --prefix qemu)/share/qemu"
+cp "$qemu_share/edk2-arm-vars.fd" out-tank-os/qcow2/edk2-arm-vars.fd
+
+qemu-system-aarch64 \
+  -M virt,highmem=on \
+  -accel hvf \
+  -cpu host \
+  -smp 2 \
+  -m 4096 \
+  -drive file=out-tank-os/qcow2/disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
+  -drive if=pflash,format=raw,file=out-tank-os/qcow2/edk2-arm-vars.fd \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -nographic
+```
+
+Notes:
+
+- `-accel hvf -cpu host` gives hardware acceleration on Apple Silicon
+  (there's no `/dev/kvm` on macOS, so the `tcg`-fallback logic in
+  `boot-tank-os-qemu.sh` isn't relevant here).
+- The AArch64 UEFI code pairs with the generic `edk2-arm-vars.fd`
+  variables file — there's no separate `edk2-aarch64-vars.fd`.
+- `make build-qcow2` on macOS needs a **rootful** Podman machine
+  (`podman machine inspect --format '{{.Rootful}}'` should say `true`) —
+  do **not** prefix the command with `sudo` on the host shell, that
+  breaks the connection to your own Podman machine instead of granting
+  privilege. If `podman machine` isn't already rootful, recreate it or
+  run `podman machine set --rootful` (may require a machine restart).
+
+### Run without attaching a console
+
+If you only need SSH access (via the forwarded port) and don't want QEMU to
+take over your terminal, replace `-nographic` with `-display none` plus
+`-daemonize` — QEMU detaches into the background immediately instead of
+attaching the serial console to your shell:
+
+```bash
+qemu-system-aarch64 \
+  -M virt,highmem=on \
+  -accel hvf \
+  -cpu host \
+  -smp 2 \
+  -m 4096 \
+  -drive file=out-tank-os/qcow2/disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
+  -drive if=pflash,format=raw,file=out-tank-os/qcow2/edk2-arm-vars.fd \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -display none \
+  -serial file:out-tank-os/qcow2/console.log \
+  -daemonize \
+  -pidfile out-tank-os/qcow2/qemu.pid
+```
+
+Your prompt returns right away, but the VM itself still takes a few seconds
+to boot — SSH won't be up yet. Check whether it's reached the login prompt
+before trying to connect:
+
+```bash
+grep "login:" out-tank-os/qcow2/console.log
+```
+
+No output means it's still booting; re-run the `grep` (or poll it:
+`until grep -q "login:" out-tank-os/qcow2/console.log 2>/dev/null; do sleep 1; done`)
+until it matches, then:
+
+```bash
+ssh -p 2222 openclaw@localhost
+tail -f out-tank-os/qcow2/console.log   # if you need to watch boot progress
+kill "$(cat out-tank-os/qcow2/qemu.pid)"   # to shut the VM down
+```
+
+(This same `-display none -daemonize -serial file:... -pidfile ...`
+substitution works on the Linux invocation above too — it isn't
+aarch64/macOS-specific, just documented here since it's what came up while
+testing this section.)
+
 ## Upgrade A Running VM
 
 After pushing a new bootc image, switch the VM to the registry ref:
 
 ```bash
 sudo bootc status
-sudo bootc switch --apply quay.io/sallyom/tank-os:latest
+sudo bootc switch --apply quay.io/redhat-et/tank-os:latest
 ```
 
 After the reboot, future updates against the same tracked tag can use:
