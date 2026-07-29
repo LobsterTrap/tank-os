@@ -354,6 +354,36 @@ substitution works on the Linux invocation above too — it isn't
 aarch64/macOS-specific, just documented here since it's what came up while
 testing this section.)
 
+## Troubleshooting
+
+**`out-tank-os` owned by root after `sudo make build-qcow2`**: on a bare
+Linux host you ran `sudo make build`/`sudo make build-qcow2` as documented
+above, so `bootc-image-builder` (running as root inside the container) owns
+everything it wrote to the bind-mounted `out-tank-os/` directory. Reclaim it
+before resizing the disk or doing anything else as your own user:
+
+```bash
+sudo chown -R "$(whoami):$(whoami)" out-tank-os
+```
+
+**QEMU fails with `Could not set up host forwarding rule 'tcp::2222-:22'`**:
+this is QEMU's usermode (`-netdev user`) networking failing to bind the
+forwarded port on the host — it doesn't need root (2222 is well above the
+privileged-port range), so adding `sudo` to the QEMU launch isn't the fix.
+It almost always means something is already listening on that port, most
+often a QEMU process from an earlier attempt that didn't exit cleanly.
+Find and stop it:
+
+```bash
+sudo ss -ltnp | grep 2222      # or: sudo lsof -i:2222
+kill <pid-from-above>
+```
+
+Then re-run the launch script or manual `qemu-system-*` invocation. If you
+need multiple VMs running at once instead, give each one a distinct
+`SSH_PORT` (or the equivalent `hostfwd` value in a manual invocation)
+rather than hunting down conflicts every time.
+
 ## Upgrade A Running VM
 
 After pushing a new bootc image, switch the VM to the registry ref:

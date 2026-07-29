@@ -55,8 +55,12 @@ detect_ovmf() {
     local code_fd=""
     local vars_fd=""
 
-    # Prefer 4M variants (most common on modern systems)
-    for path in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2-ovmf; do
+    # Prefer 4M variants (most common on modern systems). /usr/share/edk2/ovmf
+    # is where RHEL puts the plain (non-secboot) firmware -- RHEL's
+    # /usr/share/OVMF only ships OVMF_CODE.secboot.fd, which this script
+    # doesn't look for, so without this path RHEL hosts fall through to the
+    # "OVMF firmware not found" error despite OVMF being installed.
+    for path in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2-ovmf /usr/share/edk2/ovmf; do
         if [[ -f "$path/OVMF_CODE_4M.fd" ]]; then
             code_fd="$path/OVMF_CODE_4M.fd"
             [[ -f "$path/OVMF_VARS_4M.fd" ]] && vars_fd="$path/OVMF_VARS_4M.fd"
