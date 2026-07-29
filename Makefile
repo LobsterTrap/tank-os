@@ -6,6 +6,11 @@ IMAGE_NAMESPACE ?=
 IMAGE := tank-os
 FEDORA_BOOTC_BASE ?=
 OPENCLAW_REF ?= 2026.7.1
+# Single point of control for both Containerfiles that install/download
+# OpenShell (bootc/Containerfile's RPMs, bootc/openclaw-openshell's CLI
+# tarball) -- their own ARG defaults exist only for standalone builds run
+# without this Makefile, and must be bumped together with this value.
+OPENSHELL_VERSION ?= 0.0.92
 
 # Derived OpenClaw+OpenShell image has its own dedicated, already-published
 # repo (unlike IMAGE_URI above, which has no default and must be set
@@ -40,7 +45,8 @@ endif
 PLATFORM := linux/$(ARCH)
 
 BUILD_ARGS := --build-arg OPENCLAW_REF=$(OPENCLAW_REF) \
-  --build-arg OPENCLAW_OPENSHELL_IMAGE=$(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF)
+  --build-arg OPENCLAW_OPENSHELL_IMAGE=$(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF) \
+  --build-arg OPENSHELL_VERSION=$(OPENSHELL_VERSION)
 ifneq ($(FEDORA_BOOTC_BASE),)
   BUILD_ARGS += --build-arg FEDORA_BOOTC_BASE=$(FEDORA_BOOTC_BASE)
 endif
@@ -66,6 +72,7 @@ help:
 	@echo "  IMAGE_URI:       $(IMAGE_URI)"
 	@echo "  IMAGE_OPENCLAW_OPENSHELL_URI: $(IMAGE_OPENCLAW_OPENSHELL_URI)"
 	@echo "  OPENCLAW_REF:    $(OPENCLAW_REF)"
+	@echo "  OPENSHELL_VERSION: $(OPENSHELL_VERSION)"
 	@echo "  IMAGE_REGISTRY:  $(IMAGE_REGISTRY)"
 	@echo "  IMAGE_NAMESPACE: $(IMAGE_NAMESPACE)"
 	@echo "  FEDORA_BOOTC_BASE: $(FEDORA_BOOTC_BASE)"
@@ -97,6 +104,7 @@ push:
 build-openclaw-openshell:
 	podman build --platform $(PLATFORM) \
 		--build-arg OPENCLAW_REF=$(OPENCLAW_REF) \
+		--build-arg OPENSHELL_VERSION=$(OPENSHELL_VERSION) \
 		--build-arg TARGETARCH=$(ARCH) \
 		-t $(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF) \
 		-f bootc/openclaw-openshell/Containerfile bootc/openclaw-openshell

@@ -121,8 +121,9 @@ it against a real `openshell-gateway` release first.
    qemu-img resize out-tank-os/qcow2/disk.qcow2 20G
    ```
 
-1. Boot it (see `docs/build.md`'s "Launch on Linux (QEMU)" section for
-   the aarch64/macOS invocation) and SSH in as `openclaw`.
+1. Boot it — see `docs/build.md`'s "Launch on Linux (QEMU)" section on
+   Linux, or "Launch on macOS (Apple Silicon, QEMU + HVF)" on macOS (the
+   Linux script is x86_64-only) — and SSH in as `openclaw`.
 
 1. `openclaw.service` does not auto-start on first boot (a known,
    separate bug — see `tank-os-smoke-test-summary.md` finding #6), so

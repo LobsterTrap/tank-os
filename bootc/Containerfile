@@ -1,4 +1,8 @@
-ARG FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:latest
+# Pinned to Fedora 44, not `latest` -- the OpenShell RPM filenames below are
+# hardcoded to the `fc44` build (that's the only Fedora release OpenShell
+# currently publishes RPMs for). If OpenShell starts publishing fc45+
+# builds and this moves off Fedora 44, update both together.
+ARG FEDORA_BOOTC_BASE=quay.io/fedora/fedora-bootc:44
 FROM ${FEDORA_BOOTC_BASE}
 
 LABEL containers.bootc=1 \
