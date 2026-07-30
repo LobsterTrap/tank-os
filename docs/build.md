@@ -320,12 +320,25 @@ Notes:
 ### Run without attaching a console
 
 If you only need SSH access (via the forwarded port) and don't want QEMU to
-take over your terminal, replace `-nographic` with `-display none` plus
-`-daemonize` — QEMU detaches into the background immediately instead of
-attaching the serial console to your shell:
+take over your terminal, replace `-nographic` with `-display none` and
+redirect the serial console to a log file instead of attaching it to your
+shell.
+
+**Don't use `-daemonize` for this on macOS.** `-accel hvf` pulls in Apple's
+`Hypervisor.framework`, which starts Objective-C runtime/GCD threads during
+QEMU's own init; `-daemonize` then `fork()`s to detach, and forking a
+process with live Objective-C runtime threads is unsafe on modern macOS —
+the runtime aborts immediately (`objc[...]: ... may have been in progress
+in another thread when fork() was called ... Crashing instead`). This is a
+QEMU+HVF/macOS limitation, not anything image- or config-specific — see
+`docs/quickstart-prebuilt.md`'s macOS QEMU section for the same issue found
+independently while testing the published disk image. `-daemonize` is fine
+on plain Linux/KVM (no Objective-C runtime involved), but on macOS
+background the whole command at the shell level instead, so the fork
+happens before HVF ever initializes:
 
 ```bash
-qemu-system-aarch64 \
+nohup qemu-system-aarch64 \
   -M virt,highmem=on \
   -accel hvf \
   -cpu host \
@@ -338,8 +351,9 @@ qemu-system-aarch64 \
   -netdev user,id=net0,hostfwd=tcp::2222-:22 \
   -display none \
   -serial file:out-tank-os/qcow2/console.log \
-  -daemonize \
-  -pidfile out-tank-os/qcow2/qemu.pid
+  -pidfile out-tank-os/qcow2/qemu.pid \
+  < /dev/null > out-tank-os/qcow2/qemu.log 2>&1 &
+disown
 ```
 
 Your prompt returns right away, but the VM itself still takes a few seconds
@@ -360,10 +374,10 @@ tail -f out-tank-os/qcow2/console.log   # if you need to watch boot progress
 kill "$(cat out-tank-os/qcow2/qemu.pid)"   # to shut the VM down
 ```
 
-(This same `-display none -daemonize -serial file:... -pidfile ...`
-substitution works on the Linux invocation above too — it isn't
-aarch64/macOS-specific, just documented here since it's what came up while
-testing this section.)
+(On plain Linux/KVM, where the Objective-C fork-safety issue doesn't apply,
+`-daemonize -pidfile out-tank-os/qcow2/qemu.pid` in place of the
+`nohup ... & disown` wrapper above works the same way and is simpler — this
+substitution is only necessary on macOS.)
 
 ## Troubleshooting
 
