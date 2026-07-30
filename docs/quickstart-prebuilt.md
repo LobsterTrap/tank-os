@@ -100,6 +100,8 @@ section below since it's specific to that path.
 `-accel hvf`/Objective-C fork footguns (see the QEMU section below), and no
 seed ISO to build by hand (`--cloud-init` takes the `user-data`/`meta-data`
 files straight). `brew install vfkit` is the only host package needed.
+**Requires macOS 13 (Ventura) or newer** — `Virtualization.framework`'s EFI
+boot support (`--bootloader efi`) isn't available on older macOS releases.
 
 The one thing `Virtualization.framework` doesn't support is qcow2 — only
 raw and ISO images — so the extracted disk needs a one-time conversion.
@@ -109,7 +111,7 @@ for extracting the containerdisk, and run the conversion in a disposable
 Fedora container:
 
 ```bash
-podman run --rm -v "$PWD":/data registry.fedoraproject.org/fedora-minimal:42 \
+podman run --rm -v "$PWD":/data registry.fedoraproject.org/fedora-minimal:latest \
   bash -c "microdnf install -y qemu-img -q && qemu-img convert -p -O raw /data/tank-os-disk.qcow2 /data/tank-os-disk.raw"
 ```
 
@@ -152,7 +154,7 @@ port-forwarding needed, unlike QEMU's usermode networking). Tail
 `console.log`; once cloud-init brings the network up you'll see something
 like:
 
-```
+```text
 enp0s1: 192.168.64.2 fdff:24e2:4235:b92e:5054:ff:fe70:2b71
 Try contacting this VM's SSH server via 'ssh vsock%4294967295' from host.
 ```
@@ -194,14 +196,20 @@ project's own docs: it starts when `vfkit` starts and stops the instant
 # check status:
 ps -p "$(cat vfkit.pid)"
 
-# stop it:
-kill "$(cat vfkit.pid)"
+# stop it (only once ps above confirms that pid is actually vfkit):
+ps -p "$(cat vfkit.pid)" -o comm= | grep -q vfkit && kill "$(cat vfkit.pid)"
 ```
 
-`kill` (SIGTERM) here is equivalent to pulling the power, not an ACPI
-shutdown — prefer `ssh openclaw@<ip> sudo poweroff` when the guest is
-reachable, and fall back to `kill "$(cat vfkit.pid)"` (or `pgrep -fl
-vfkit` if you forgot `--pidfile`) when it isn't.
+The `ps ... | grep -q vfkit &&` guard matters because a stale `vfkit.pid`
+left over from a previous run can point at an unrelated process the OS has
+since reassigned that PID to — checking the command name first avoids
+sending `kill` to the wrong target. `kill` here sends SIGTERM, which vfkit
+treats as a graceful stop request (`RequestStop()`, giving the guest OS up
+to 5 seconds to shut down cleanly before forcing it off) — not an abrupt
+power-pull. Prefer `ssh openclaw@<ip> sudo poweroff` when the guest is
+reachable regardless, since it lets the guest shut down on its own terms
+without depending on vfkit's timeout; fall back to the `kill` above (or
+`pgrep -fl vfkit` if you forgot `--pidfile`) when SSH isn't available.
 
 ## macOS (Apple Silicon) via QEMU
 
