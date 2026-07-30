@@ -69,7 +69,11 @@ Reuse this repo's existing cloud-config (already shaped for the pre-existing
 `authorized_keys`, it doesn't need to recreate the user):
 
 ```bash
-cp examples/cloud-init/openclaw-user-data.yaml ./user-data
+# If running outside of the repo, download the example from GitHub
+curl -L -o user-data https://github.com/LobsterTrap/tank-os/raw/refs/heads/main/examples/cloud-init/openclaw-user-data.yaml
+
+# If running from the repo clone, use the local copy
+#cp examples/cloud-init/openclaw-user-data.yaml ./user-data
 python3 -c "
 import pathlib
 key = pathlib.Path.home().joinpath('.ssh/id_ed25519.pub').read_text().strip()
@@ -83,8 +87,150 @@ local-hostname: tank
 EOF
 ```
 
-Then build a `cidata`-labeled seed ISO from those two files — pick whichever
-tool you already have:
+`user-data`/`meta-data` are all you need from here — `vfkit` (below) and
+`virt-install` (Fedora Linux, below) both take these two files directly via
+a `--cloud-init` flag and build their own seed image internally. Only the
+plain-QEMU path needs a seed ISO built by hand; that step is in the QEMU
+section below since it's specific to that path.
+
+## macOS (Apple Silicon) via vfkit
+
+[vfkit](https://github.com/crc-org/vfkit) drives Apple's own
+`Virtualization.framework` directly — no OVMF firmware file to manage, no
+`-accel hvf`/Objective-C fork footguns (see the QEMU section below), and no
+seed ISO to build by hand (`--cloud-init` takes the `user-data`/`meta-data`
+files straight). `brew install vfkit` is the only host package needed.
+**Requires macOS 13 (Ventura) or newer** — `Virtualization.framework`'s EFI
+boot support (`--bootloader efi`) isn't available on older macOS releases.
+
+The one thing `Virtualization.framework` doesn't support is qcow2 — only
+raw and ISO images — so the extracted disk needs a one-time conversion.
+Rather than adding a second Homebrew package (`qemu-img` only ships bundled
+inside the full ~700MB `qemu` formula), reuse the `podman` you already have
+for extracting the containerdisk, and run the conversion in a disposable
+Fedora container:
+
+```bash
+podman run --rm -v "$PWD":/data registry.fedoraproject.org/fedora-minimal:latest \
+  bash -c "microdnf install -y qemu-img -q && qemu-img convert -p -O raw /data/tank-os-disk.qcow2 /data/tank-os-disk.raw"
+```
+
+The result is a sparse file — `ls -la` reports the full 20G, but `du -h`
+shows only the actual data (macOS's APFS handles the sparseness natively,
+same as the doc's earlier note on avoiding qcow2 replacements elsewhere).
+
+Boot it:
+
+```bash
+nohup vfkit \
+  --cpus 2 --memory 4096 \
+  --bootloader efi,variable-store=./vfkit-efi-vars,create \
+  --device virtio-blk,path=./tank-os-disk.raw \
+  --device virtio-net,nat,mac=52:54:00:70:2b:71 \
+  --device virtio-rng \
+  --cloud-init ./user-data,./meta-data \
+  --device virtio-serial,logFilePath=./console.log \
+  --pidfile ./vfkit.pid \
+  > vfkit.log 2>&1 &
+disown
+```
+
+Uses the same `user-data`/`meta-data` files from "Use your own SSH key"
+above — no seed ISO build step needed, vfkit's `--cloud-init` flag builds
+one internally. `--device virtio-serial,logFilePath=./console.log` runs
+headless by default (vfkit only shows a GUI window if you pass `--gui`
+*and* add a `virtio-gpu` device); tail `console.log` to watch boot.
+
+**`vfkit` runs in the foreground and blocks until the VM halts — the final
+`INFO[0000] waiting for VM to stop` line is normal, not a sign anything is
+wrong or shutting down.** It just means vfkit's main thread has finished
+setup and is now parked waiting for the VM to exit. Run it with `nohup ...
+&` (as above) to get your shell back immediately; `vfkit.log` keeps
+capturing that same startup log if you want to check it later.
+
+**Finding the guest's IP — and a red herring to ignore:** `virtio-net,nat`
+hands the guest a real, directly-routable IP from the host (no `hostfwd`
+port-forwarding needed, unlike QEMU's usermode networking). Tail
+`console.log`; once cloud-init brings the network up you'll see something
+like:
+
+```text
+enp0s1: 192.168.64.2 fdff:24e2:4235:b92e:5054:ff:fe70:2b71
+Try contacting this VM's SSH server via 'ssh vsock%4294967295' from host.
+```
+
+**Ignore the `ssh vsock%...` line** — that's `systemd-ssh-generator`, a
+newer systemd feature that offers to expose sshd over AF_VSOCK
+automatically. It needs a `virtio-vsock` device wired up between host and
+guest to actually work, which this vfkit invocation doesn't attach (see
+`vfkit --device` above — we only added `virtio-blk`/`virtio-net`/
+`virtio-rng`/`virtio-serial`). Pasting that line verbatim into a macOS
+terminal, as you found, just fails to resolve as a hostname — it's not
+meant to be typed as-is outside a properly configured vsock+SSH setup. Use
+the plain IPv4 address on the line above it instead:
+
+```bash
+ssh openclaw@192.168.64.2   # substitute the address enp0s1 actually printed
+```
+
+That address is also recorded in `/var/db/dhcpd_leases` on the host if you
+need to look it up again later, but it's simplest to just read it off
+`console.log`.
+
+**Verified on macOS/aarch64 (M3), 2026-07-30:** clean boot with no PCI
+option-ROM/TPM log noise at all (Apple's EFI implementation doesn't probe
+PCI option ROMs the way OVMF does — see the QEMU section's note on that),
+`systemctl is-system-running` reports `running`, SSH via the printed
+DHCP address worked immediately using a key supplied purely through
+`--cloud-init`.
+
+**Checking whether it's running, and stopping it:** unlike QEMU/libvirt,
+`vfkit --help` has no built-in `list`/`stop` subcommand — the VM's
+lifecycle is tied directly to the `vfkit` process itself (per the
+project's own docs: it starts when `vfkit` starts and stops the instant
+`vfkit` exits, whether via `Ctrl+C` or `kill`). That's what `--pidfile
+./vfkit.pid` above is for, instead of hunting for the process with
+`pgrep` after the fact:
+
+```bash
+# check status:
+ps -p "$(cat vfkit.pid)"
+
+# stop it (only once ps above confirms that pid is actually vfkit):
+ps -p "$(cat vfkit.pid)" -o comm= | grep -q vfkit && kill "$(cat vfkit.pid)"
+```
+
+The `ps ... | grep -q vfkit &&` guard matters because a stale `vfkit.pid`
+left over from a previous run can point at an unrelated process the OS has
+since reassigned that PID to — checking the command name first avoids
+sending `kill` to the wrong target. `kill` here sends SIGTERM, which vfkit
+treats as a graceful stop request (`RequestStop()`, giving the guest OS up
+to 5 seconds to shut down cleanly before forcing it off) — not an abrupt
+power-pull. Prefer `ssh openclaw@<ip> sudo poweroff` when the guest is
+reachable regardless, since it lets the guest shut down on its own terms
+without depending on vfkit's timeout; fall back to the `kill` above (or
+`pgrep -fl vfkit` if you forgot `--pidfile`) when SSH isn't available.
+
+## macOS (Apple Silicon) via QEMU
+
+QEMU works too, and is documented here for completeness / as a fallback if
+`vfkit` isn't an option — but it's a heavier dependency (~700MB via
+`brew install qemu`) and has a couple of macOS-specific rough edges (see
+the notes after the command). Same QEMU + HVF invocation as
+`docs/build.md`'s "Launch on macOS" section, just pointed at the extracted
+qcow2 instead of a locally built one:
+
+```bash
+qemu-img resize ./tank-os-disk.qcow2 20G
+
+qemu_share="$(brew --prefix qemu)/share/qemu"
+cp "$qemu_share/edk2-arm-vars.fd" ./edk2-arm-vars.fd
+```
+
+Unlike `vfkit`/`virt-install`, plain QEMU has no built-in cloud-init
+support, so the `user-data`/`meta-data` from "Use your own SSH key" above
+need to be packed into a `cidata`-labeled seed ISO by hand first — pick
+whichever tool you already have:
 
 ```bash
 # Linux, if cloud-utils/cloud-image-utils is installed:
@@ -98,34 +244,9 @@ mkdir -p seed && cp user-data meta-data seed/
 hdiutil makehybrid -iso -joliet -default-volume-name cidata -o seed.iso seed
 ```
 
-Then attach `seed.iso` as one more `-drive` in whichever QEMU invocation
-you're using below:
+Then attach it as one more `-drive`, boot:
 
 ```bash
--drive file=seed.iso,format=raw,if=virtio
-```
-
-Verified end to end this way (macOS/aarch64, QEMU+HVF): SSH succeeded using
-a key that was never part of the image at all, added purely through the
-seed ISO — confirming this works regardless of whatever key the image's
-builder baked in.
-
-`virt-install` (Fedora Linux, below) has this built in — pass
-`--cloud-init user-data=./user-data,meta-data=./meta-data` instead of
-building the ISO by hand; virt-install generates the same kind of seed
-image itself.
-
-## macOS (Apple Silicon) via QEMU
-
-Same QEMU + HVF invocation as `docs/build.md`'s "Launch on macOS" section,
-just pointed at the extracted qcow2 instead of a locally built one:
-
-```bash
-qemu-img resize ./tank-os-disk.qcow2 20G
-
-qemu_share="$(brew --prefix qemu)/share/qemu"
-cp "$qemu_share/edk2-arm-vars.fd" ./edk2-arm-vars.fd
-
 qemu-system-aarch64 \
   -M virt,highmem=on \
   -accel hvf \
@@ -145,6 +266,41 @@ Requires `brew install qemu`. SSH once booted: `ssh -p 2222 openclaw@localhost`
 using **your own key** from `seed.iso` above — drop the `-drive
 file=./seed.iso,...` line entirely if you already know the published
 image's baked-in key matches yours (e.g. you built it yourself).
+
+**Don't swap `-nographic` for `-daemonize` to run headless.** `-accel hvf`
+pulls in Apple's `Hypervisor.framework`, which starts Objective-C
+runtime/GCD threads during QEMU's own init. `-daemonize` then `fork()`s to
+detach — forking a process that already has live Objective-C runtime
+threads is unsafe on modern macOS, and the runtime aborts immediately
+(`objc[...]: ... may have been in progress in another thread when fork()
+was called ... Crashing instead`). This is a QEMU+HVF/macOS limitation, not
+anything image- or config-specific. Background the whole command at the
+shell level instead, so the fork happens before HVF ever initializes:
+
+```bash
+nohup qemu-system-aarch64 \
+  -M virt,highmem=on -accel hvf -cpu host -smp 2 -m 4096 \
+  -drive file=./tank-os-disk.qcow2,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,readonly=on,file="$qemu_share/edk2-aarch64-code.fd" \
+  -drive if=pflash,format=raw,file=./edk2-arm-vars.fd \
+  -drive file=./seed.iso,format=raw,if=virtio \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -display none -serial file:console.log \
+  < /dev/null > qemu.log 2>&1 &
+disown
+```
+
+**Expect several "Image ... start failed" / TPM / TRNG lines during boot —
+these are benign.** EDK2/OVMF enumerates every PCI option ROM it finds and
+tries to run each one regardless of architecture; `virtio-net-pci`'s
+option ROM bundles a legacy x86 image alongside the EFI one, so EDK2 tries
+the x86 image, logs `Image type X64 can't be loaded on AARCH64 UEFI
+system`, and moves on to the correct image. The TPM/TRNG warnings likewise
+just mean no vTPM/RNG device is attached, not that anything is broken.
+None of this indicates a mismatched-architecture disk image — a genuinely
+wrong-arch qcow2 wouldn't produce a working boot at all. If SSH succeeds
+and `uname -a` inside the guest reports `aarch64`, the image is correct.
 
 ## Fedora Linux
 
