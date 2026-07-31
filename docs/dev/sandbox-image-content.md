@@ -95,7 +95,76 @@ NVIDIA's broader community use case rather than anything tank-os currently
 needs — worth pruning if we fork this file rather than inheriting it
 wholesale.
 
-## Finding 4: sandbox selection is static in tank-os, by design
+## Finding 4a: the bundled agent CLIs are for a use case tank-os doesn't have
+
+NVIDIA's own docs (`docs/about/supported-agents.mdx` in `NVIDIA/OpenShell`)
+explain why `base` bundles Claude Code, Codex, Copilot, and OpenCode:
+
+> "Agents in the base image are auto-configured when passed as the trailing
+> command to `openshell sandbox create`."
+
+i.e. `base` is meant for `openshell sandbox create --from base -- codex` —
+the sandboxed process **is** one of those CLIs, chosen at launch time by
+whoever creates the sandbox. It's a "pick one of several coding assistants
+to run sandboxed" menu, not a toolbox for some other orchestrator to shell
+out to.
+
+tank-os never launches a sandbox that way. `bootstrap-openshell-sandbox`
+pre-creates the sandbox with no trailing agent command; OpenClaw's plugin
+SSHes in afterward and runs arbitrary shell commands the OpenClaw agent
+decides on. None of the four bundled CLIs are ever invoked in that flow —
+they're inherited baggage from forking the generic multi-agent `base`
+image, not a deliberate choice for tank-os's actual usage pattern.
+
+Worth noting: the same support-matrix table lists **OpenClaw's own
+NVIDIA-recommended integration path as a separate project, NemoClaw**
+(`github.com/NVIDIA/NemoClaw`) — not the `base` image tank-os forked. See
+Finding 4b before assuming NemoClaw is a shortcut, though.
+
+## Finding 4b: NemoClaw is not a drop-in leaner alternative
+
+NemoClaw (NVIDIA's own "run OpenClaw more securely inside OpenShell"
+project) looks at first glance like it might sidestep this whole question,
+but it's a materially different architecture, not a leaner sandbox image:
+
+- Built on `node:22-trixie-slim` (Debian), not Hummingbird.
+- It bakes **the entire OpenClaw gateway into the sandbox image itself** —
+  `npm ci`-installs OpenClaw, patches OpenClaw's own source directly
+  (`patch-openclaw-tool-catalog.mts`, `patch-openclaw-chat-send.mts`,
+  `patch-openclaw-mcp-npx.mts`, and others), creates both `gateway` and
+  `sandbox` users, generates `openclaw.json` at build time.
+- That collapses tank-os's two-container split (OpenClaw gateway container
+  + separate SSHed-into sandbox container) into one combined image —
+  a different topology, not a substitute component.
+
+Adopting NemoClaw would mean replacing tank-os's container architecture
+entirely, not swapping a digest. It's out of scope for the sandbox-content
+question this doc is about; noted here so it doesn't get re-proposed as a
+quick fix without this context.
+
+## Connecting 4a back to Finding 3 (Hummingbird vs. CVE surface)
+
+The tension raised in discussion — "why use a zero-CVE base and then layer
+a Node/npm dependency tree on top of it" — is legitimate, but it's largely
+the *same* problem as Finding 4a, not a separate one. Most of the
+Node/npm footprint in the current image comes from the three redundant
+agent CLIs (`opencode-ai`, `@openai/codex`, `@github/copilot`) that Finding
+4a shows tank-os doesn't need. NVIDIA's own Dockerfile comments show they
+don't get this for free either — they manually pin `tar@7.5.11`, upgrade
+`npm` to v11, and cite specific CVE numbers for their Node layer, because
+the npm ecosystem doesn't inherit Hummingbird's/UBI's provenance guarantees
+just by being copied into the same image.
+
+Practical takeaway: "zero-CVE" describes the curated OS package set, not
+anything layered on top of it — that part is the integrator's
+responsibility regardless of base image. Trimming the redundant agent CLIs
+removes most of the current npm attack surface for free; whatever
+legitimate footprint remains (git, and Node/Python only if something in
+our actual workloads needs them) is small enough to actually apply the
+same pin-and-scan discipline to (e.g. with `grype`, itself a Hummingbird
+image).
+
+## Finding 5: sandbox selection is static in tank-os, by design
 
 `plugins.entries.openshell.config.from` in OpenClaw's config
 (`bootstrap-openclaw`) is documented to accept only a bare sandbox *name*,
@@ -136,6 +205,8 @@ regardless of what we decide about sandbox content.
    layered on top?
 3. Do we need the "run other agent CLIs from inside the sandbox" capability
    NVIDIA's image includes, or is that out of scope for tank-os's use case?
+   (Per Finding 4a: current evidence says no — nothing in tank-os's flow
+   ever invokes them.)
 4. If we prune `policy.yaml`, which of NVIDIA's non-OpenClaw policy entries
    (`vscode`, `cursor`, `copilot`, `codex`, `opencode`, `nvidia_inference`)
    are actually irrelevant to us, versus worth keeping for future
