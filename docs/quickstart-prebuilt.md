@@ -182,6 +182,11 @@ That address is also recorded in `/var/db/dhcpd_leases` on the host if you
 need to look it up again later, but it's simplest to just read it off
 `console.log`.
 
+Opening the OpenClaw dashboard directly at that IP (`http://192.168.64.2:18789/`)
+will fail with a browser secure-context error — see `docs/cli.md`'s
+"Browser secure-context requirement" for why, the SSH-tunnel fix, and a
+workaround if your network blocks SSH local port-forwarding to that port.
+
 **Verified on macOS/aarch64 (M3), 2026-07-30:** clean boot with no PCI
 option-ROM/TPM log noise at all (Apple's EFI implementation doesn't probe
 PCI option ROMs the way OVMF does — see the QEMU section's note on that),
