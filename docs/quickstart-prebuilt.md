@@ -112,8 +112,13 @@ Fedora container:
 
 ```bash
 podman run --rm -v "$PWD":/data registry.fedoraproject.org/fedora-minimal:latest \
-  bash -c "microdnf install -y qemu-img -q && qemu-img convert -p -O raw /data/tank-os-disk.qcow2 /data/tank-os-disk.raw"
+  bash -c "microdnf install -y qemu-img -q && qemu-img resize /data/tank-os-disk.qcow2 20G && qemu-img convert -p -O raw /data/tank-os-disk.qcow2 /data/tank-os-disk.raw"
 ```
+
+The published containerdisk's qcow2 isn't pre-sized to 20G, so the resize
+has to happen before conversion here — same requirement as the QEMU section
+below, just folded into this disposable container instead of a separate
+host-installed `qemu-img` step.
 
 The result is a sparse file — `ls -la` reports the full 20G, but `du -h`
 shows only the actual data (macOS's APFS handles the sparseness natively,
