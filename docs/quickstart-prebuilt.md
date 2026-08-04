@@ -449,3 +449,24 @@ Verify from inside the guest:
 limactl shell tank-os -- sudo -u openclaw \
   env XDG_RUNTIME_DIR=/run/user/1000 openshell sandbox get tankos-openclaw
 ```
+
+## Give OpenClaw a model provider key
+
+The extracted image ships with no model provider configured — OpenClaw needs
+at least one API key before it can respond to anything. As with the SSH key
+above, you don't need an interactive shell on the VM for this: pipe the value
+straight to `podman secret create` over SSH, using whichever `openclaw@<host>`
+address the platform section above used to reach the VM (add `-p <port>` for
+the QEMU/`virt-install` paths that forward a local port instead of exposing a
+routable IP):
+
+```bash
+printf '%s' "$ANTHROPIC_API_KEY" | ssh openclaw@<host> "podman secret create anthropic_api_key -"
+ssh openclaw@<host> "tank-openclaw-secrets && systemctl --user restart openclaw.service"
+```
+
+See [model-providers.md](model-providers.md) for the full list of supported
+secret names, and
+[provisioning.md](provisioning.md#injecting-secrets-from-the-host) for the
+gateway-token equivalent and why this works without an interactive login
+session.

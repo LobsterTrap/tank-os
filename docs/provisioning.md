@@ -244,6 +244,35 @@ systemctl --user restart openclaw.service
 
 Create Podman secrets in the `openclaw` user's rootless store and inject them into the OpenClaw container.
 
+### Injecting Secrets From the Host
+
+The sections below assume an interactive session on the VM (`sudo -iu openclaw`
+or a direct `ssh openclaw@<host>` login). If you keep credentials on your
+development machine instead, you do not need an interactive shell at all —
+pipe the value straight to `podman secret create` over SSH:
+
+```bash
+printf '%s' "$ANTHROPIC_API_KEY" | ssh openclaw@<host> "podman secret create anthropic_api_key -"
+```
+
+Use `printf '%s'`, not `echo`, so the secret does not pick up a trailing
+newline. Substitute `<host>` (and any port, e.g. `-p "$PORT"` for the
+[local macOS VM](#local-macos-vm) forwarded-port case) with whatever you'd use
+to reach the instance elsewhere in this doc. This only works unattended
+because the cloud-init template enables lingering for `openclaw`
+(`loginctl enable-linger openclaw`); without it, rootless Podman may not have
+a runtime session ready for a non-interactive SSH command.
+
+Apply the secret and restart the service the same way:
+
+```bash
+ssh openclaw@<host> "tank-openclaw-secrets && systemctl --user restart openclaw.service"
+```
+
+Avoid typing the raw secret value directly into a command (it lands in shell
+history); export it from a password manager or prompt for it with `read -s`
+instead.
+
 ### Gateway Token Setup
 
 Execute the following commands to create the Openclaw Gateway Token:
