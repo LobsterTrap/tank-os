@@ -1,6 +1,23 @@
 # Design: tank-os as openclaw-csb's bootc/qcow2 deployment channel
 
-Status: approved direction, not yet implemented. Written to hand off to a
+Status: approved direction; Phase 0 validation spike complete, one
+blocker found. The core bet — CSB image + OpenShell sandbox + providers
+replacing tank-os's own OpenClaw/OpenShell integration — holds up
+hands-on: sandbox creation works (with the trailing-command caveat in
+Future consideration 6), provider create/update/removal semantics across
+reboots are now known (Open Question 7), the dashboard is reachable via
+`forward` (Open Question 6), and GitHub/Forgejo credential-scoping via
+providers works end to end, letting service-gator retire for those two
+(Open Question 2 / Findings I, J). **Not yet implementable as designed**:
+there is still no secure way to supply CSB's own required
+`OPENCLAW_GATEWAY_TOKEN` to `openshell sandbox create` (Future
+consideration 5) — Task 4 only got a real gateway running via a
+sanctioned throwaway-token workaround, not a solution, so this blocks
+writing the real bootstrap script until resolved (options noted in
+Future consideration 5 for the next session to evaluate). Two more
+follow-ups are known-remaining but non-blocking: GitLab is inferred, not
+independently hands-on verified, to behave like GitHub (Open Question
+2), and Jira is untested (Open Question 2). Written to hand off to a
 fresh session for implementation planning (`writing-plans` skill or
 equivalent) — this doc is meant to be self-contained enough that the next
 session doesn't need this conversation's history.
