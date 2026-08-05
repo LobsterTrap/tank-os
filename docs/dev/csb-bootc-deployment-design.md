@@ -344,6 +344,15 @@ port (Finding E).
    `service expose`'s hostname-based routing is a single-command flow but
    has no documented websocket/secure-context guarantees. Needs a hands-on
    comparison, not just documentation reading.
+7. **Provider lifecycle across reboots.** The Data flow's Boot step 3
+   (`openshell sandbox create ... destroying/recreating`) covers the
+   *sandbox's* lifecycle explicitly, but step 2's `ExecStartPre` provider
+   registration doesn't yet say what happens on the second and later
+   boots: stable provider names so re-registration is idempotent rather
+   than accumulating duplicates, get-or-create/update semantics when a
+   secret's value has changed since the last boot, and removal/detachment
+   of providers whose backing secret has disappeared. Needs a decision
+   before the bootstrap script is written, not just at review time.
 
 ## Future considerations (not blocking, keep in mind while designing)
 
@@ -369,12 +378,15 @@ could mean either (a) a genuinely VM-wide env var (broader exposure than
 today's container-scoped Podman secret mount), or (b) the bootstrap
 script pulling the secret value directly into its own short-lived process
 env at the point of use — e.g. via `podman secret inspect --showsecret`
-— and never persisting it more broadly, then either exporting it just
-for that one command or using `openshell provider create --credential
-KEY=VALUE` explicitly instead of `--from-existing`. (b) keeps the same
-narrow-exposure property the rest of this design is trying to achieve;
-(a) would quietly widen it. This needs a hands-on check, not a decision
-made on paper.
+— and never persisting it more broadly, then exporting it just for that
+one command and calling `--from-existing`, or the bare `--credential
+KEY` form (reads the named var from the calling process's own
+environment). **Not** the literal `--credential KEY=VALUE` form with the
+real value inlined — that puts the secret in the process's argv, visible
+to any local user via `ps` or `/proc/<pid>/cmdline`, which defeats the
+narrow-exposure property (b) is trying to preserve. (a) would widen
+exposure a different way, VM-wide instead of via argv. This needs a
+hands-on check, not a decision made on paper.
 
 ### 2. A version-check helper for the bundled OpenClaw/OpenShell versions
 
