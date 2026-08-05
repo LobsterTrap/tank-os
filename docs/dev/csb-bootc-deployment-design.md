@@ -212,6 +212,50 @@ already-published image as its Quadlet workload, the same way tank-os
 already runs a container as a Quadlet workload today (just pointed at a
 different, better-maintained image and integration).
 
+### Finding I — hands-on validation that OpenShell providers can replace service-gator for GitHub, at least
+
+Personal lab notes at `~/work/learn-openshell/docs/lab/06-providers-and-github-access.md`
+(local-only, not published — no `git remote` configured) document a working,
+tested GitHub PAT setup via OpenShell's `github` provider type, with
+Providers v2 profiles bundling the credential *and* its L7 network policy
+together:
+
+- `openshell provider create --name gh-claw --type github --from-existing`
+  reads `GITHUB_TOKEN`/`GH_TOKEN` from the environment and stores it at the
+  gateway. A sandbox attached with `--provider gh-claw` sees only a
+  placeholder (`gh auth status` inside the sandbox shows
+  `Token: openshell:resolve:env:v14194160994005896062_GITHUB_*****`, never
+  the real PAT).
+- **Multiple providers per sandbox is the intended, tested pattern** for
+  combining an agent-identity provider (`codex`/`claude`) with a
+  service-credential provider (`gh-claw`) on the same sandbox —
+  `openshell sandbox create --provider codex --provider gh-claw -- codex`.
+  This is exactly tank-os's shape: one sandbox, OpenClaw's own LLM-provider
+  credential plus whatever tool-call service credentials it needs.
+  Credential env var keys must stay unique across all attached providers.
+- **Defense in depth confirmed empirically**: a PAT scoped without
+  Contents access still got a real `403` from GitHub on a branch-creation
+  call, independent of and in addition to the provider profile's own L7
+  policy — the two layers (PAT scope, proxy policy) are genuinely
+  independent, not redundant.
+- Provider profiles (v2, `providers_v2_enabled`) bundle credentials with
+  endpoint `rules`/`access` policy in one reusable YAML, so attaching a
+  provider also contributes network policy — a tighter integration than
+  service-gator's separate credential-file + MCP-server split.
+
+**Caveat**: this was only tested for GitHub, on a local Podman-driver
+gateway (OpenShell 0.0.83). It has *not* been verified for Forgejo or Jira
+— per earlier research (Finding A), OpenShell's built-in provider types
+include `github` and `gitlab` explicitly, but Forgejo/Jira would need the
+`generic` type (custom env var names, no built-in endpoint-policy
+template), which is untested here.
+
+**Updates Open Question 2 below**: this is now a strong signal that
+**service-gator can likely be retired** in favor of OpenShell providers,
+at least for GitHub and GitLab (both built-in types); Forgejo/Jira via
+`generic` providers still needs a hands-on check before committing to
+dropping service-gator entirely.
+
 ## The design
 
 ### Component roles
@@ -223,7 +267,7 @@ different, better-maintained image and integration).
 | **A new tank-os boot-time bootstrap script** | A non-interactive port of what `scripts/openclaw-csb create` does interactively: registers OpenShell providers from tank-os's existing Podman-secret store (see `docs/provisioning.md`'s Podman Secrets section, including the host-SSH-pipe method added earlier in this effort), creates the CSB sandbox fresh on every boot (mirroring tank-os's existing recreate-on-boot pattern for its current tool-call sandbox — no dependency on OpenShell's `StartupResume`), and starts the dashboard forward bound to the VM guest's own loopback `18789` (Finding E). | `bootstrap-openshell-sandbox`, most of `sync-podman-secrets`, and the `openclaw.container` Quadlet's direct image reference. |
 | **A rewritten Quadlet/systemd unit** | Runs the bootstrap script's sandbox-create invocation with the gateway command in the foreground (not backgrounded via `nohup`, unlike the reference scripts in Finding C), so systemd's `Restart=on-failure` supervises the real process, not a detached child. | `openclaw.container`. |
 | **Podman secrets for whatever CSB itself doesn't route through a provider** (gateway token, and any model keys CSB handles via `read_secret()` rather than a provider) | Matches CSB's own current mixed state (Finding G) — tank-os doesn't need to be purer than CSB is today. | `sync-podman-secrets`'s existing env-injection Quadlet drop-in generation, narrowed in scope. |
-| **service-gator** | Open question — CSB doesn't reference it at all. Needs a decision during implementation planning: keep it for scopes CSB doesn't cover, or retire it in favor of CSB's own `github`/`gitlab` provider types. | Not yet decided; see Open Questions. |
+| **service-gator** | Likely retired. CSB doesn't reference it at all, and Finding I is hands-on-verified evidence that OpenShell's `github`/`gitlab` providers (plus `generic` for anything else) cover the same scoped-credential need natively, with tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split. Confirm Forgejo/Jira via `generic` providers before fully committing. | Likely fully removed; see Finding I / Open Question 2. |
 
 ### Data flow
 
@@ -273,8 +317,12 @@ port (Finding E).
    plugin set, any tank-os-specific customizations like alternate sandbox
    tool images)? Needs direct verification — likely the first concrete
    implementation step (see "Suggested first step" below).
-2. **service-gator's fate** — keep, retire in favor of CSB's own
-   `github`/`gitlab` providers, or out of scope for a first iteration?
+2. **service-gator's fate** — Finding I makes retirement the likely
+   answer for GitHub/GitLab (hands-on verified for GitHub specifically).
+   Remaining work: verify Forgejo/Jira via `generic` providers the same
+   way, then decide whether to drop service-gator entirely in this first
+   iteration or keep it only for whatever `generic`-provider testing
+   doesn't cover.
 3. **Which existing tank-os docs still apply unchanged** (e.g.
    `docs/model-providers.md`'s full provider list,
    `docs/openshift-virtualization.md`'s per-VM deployment model) versus
