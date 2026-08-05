@@ -1,24 +1,26 @@
 # Design: tank-os as openclaw-csb's bootc/qcow2 deployment channel
 
-Status: approved direction; Phase 0 validation spike complete, one
-blocker found. The core bet — CSB image + OpenShell sandbox + providers
-replacing tank-os's own OpenClaw/OpenShell integration — holds up
-hands-on: sandbox creation works (with the trailing-command caveat in
-Future consideration 6), provider create/update/removal semantics across
-reboots are now known (Open Question 7), the dashboard is reachable via
-`forward` (Open Question 6), and GitHub/Forgejo credential-scoping via
-providers works end to end, letting service-gator retire for those two
-(Open Question 2 / Findings I, J). **Not yet implementable as designed**:
-there is still no secure way to supply CSB's own required
-`OPENCLAW_GATEWAY_TOKEN` to `openshell sandbox create` (Future
-consideration 5) — Task 4 only got a real gateway running via a
-sanctioned throwaway-token workaround, not a solution, so this blocks
-writing the real bootstrap script until resolved (options noted in
-Future consideration 5 for the next session to evaluate). Two more
-follow-ups are known-remaining but non-blocking: GitLab is inferred, not
-independently hands-on verified, to behave like GitHub (Open Question
-2), and Jira is untested (Open Question 2). Written to hand off to a
-fresh session for implementation planning (`writing-plans` skill or
+Status: approved direction; Phase 0 validation spike complete, no known
+blockers to starting implementation. The core bet — CSB image +
+OpenShell sandbox + providers replacing tank-os's own OpenClaw/OpenShell
+integration — holds up hands-on: sandbox creation works (with the
+wrapper-command form in Finding K / Future consideration 6), provider
+create/update/removal semantics across reboots are now known (Open
+Question 7), the dashboard is reachable via `forward` (Open Question 6),
+GitHub/Forgejo credential-scoping via providers works end to end (Open
+Question 2 / Findings I, J), and there is now a verified-working,
+argv-safe way to supply CSB's `OPENCLAW_GATEWAY_TOKEN` via `--upload`
+plus a shell wrapper (Finding K, closes out issue #41 and Future
+consideration 5) — **verified for the token alone, without providers
+attached; combining `--upload` with `--provider` flags and with
+multiple secrets at once in a single invocation (the actual production
+shape) is a reasonable inference from the mechanism but not yet
+independently tested**, so treat that combination as the first thing to
+confirm when writing the real bootstrap script, not as already proven.
+Two more follow-ups remain known but non-blocking: GitLab is inferred,
+not independently hands-on verified, to behave like GitHub (Open
+Question 2), and Jira is untested (Open Question 2). Written to hand off
+to a fresh session for implementation planning (`writing-plans` skill or
 equivalent) — this doc is meant to be self-contained enough that the next
 session doesn't need this conversation's history.
 
@@ -358,6 +360,108 @@ worked. `generic` needs materially more manual setup than `github`/
   instance/token before committing to dropping service-gator for Jira
   specifically.
 
+### Finding K — `--upload` plus a wrapper command solves the `OPENCLAW_GATEWAY_TOKEN` gap (Future consideration 5 resolved)
+
+**2026-08-05, post-merge follow-up to the Phase 0 spike (tracked in
+issue #41):** Future consideration 5 (below) originally concluded there
+was no secure way to supply `OPENCLAW_GATEWAY_TOKEN` to `openshell
+sandbox create`. Root-caused further and solved.
+
+**Deeper root cause than "missing `--secret` flag":** `/run` itself is
+unreachable from inside an OpenShell sandbox — not a plain Unix
+permission issue (`stat /run` succeeds and reports `0755 root:root`, but
+`ls -la /run` and any write under `/run/` both fail with "Permission
+denied," which is *consistent with* OpenShell's own sandbox filesystem
+policy denying the path rather than the mode bits, though a masked/
+restricted mount would produce the same two symptoms and wasn't ruled
+out independently). CSB's `read_secret()` (Finding G) hardcodes
+`/run/secrets/<name>` — the Podman-native secrets-mount convention CSB
+assumes when run via plain `podman run --secret ...`. That path is
+unreachable when CSB runs inside an OpenShell sandbox instead,
+independent of whatever CLI flags `openshell sandbox create` does or
+doesn't expose. Confirmed hands-on: `openshell sandbox create ...
+--upload <file>:/run/secrets/openclaw-gateway-token` fails at the upload
+step itself — `tar: openclaw-gateway-token: Cannot open: Permission
+denied` — before the entrypoint even runs.
+
+**Working solution:** `openshell sandbox create` has an `--upload
+<LOCAL_PATH>[:<SANDBOX_PATH>]` flag (visible in `--help`; Future
+consideration 5 below already named this as an *untested* option to
+evaluate — this is that evaluation) that copies a local file into the
+sandbox's own filesystem *before* the trailing command runs. `/tmp`
+inside the sandbox is writable by the sandbox's own user (confirmed:
+`drwxrwxrwt`, and the uploaded file landed `-rw-------` owned by the
+sandbox user, not root) — unlike `/run`, which is unreachable as above.
+Combining `--upload` with a shell wrapper as the trailing command,
+instead of invoking `/app/entrypoint.sh` directly, gets the token into
+the entrypoint's environment without it ever appearing in `sandbox
+create`'s own argv.
+
+**Exactly what was tested** (gateway-token only, no `--provider` flags,
+token sourced from a local throwaway file, not yet from a live Podman
+secret or combined with providers — see caveats below):
+
+```bash
+TMPFILE=$(mktemp); chmod 600 "$TMPFILE"
+openssl rand -hex 24 > "$TMPFILE"   # throwaway value for this test only
+openshell sandbox create --from quay.io/redhat-et/openclaw:csb-2026.07.21 \
+  --name gwtoken-spike5 --no-tty \
+  --upload "$TMPFILE:/tmp/gwtoken" \
+  -- sh -c 'export OPENCLAW_GATEWAY_TOKEN="$(cat /tmp/gwtoken)"; rm -f /tmp/gwtoken; exec /app/entrypoint.sh'
+rm -f "$TMPFILE"
+```
+
+**Confirmed end to end**: the gateway logged `[gateway] ready` and
+`openshell sandbox exec -n gwtoken-spike5 -- curl ... http://127.0.0.1:18789/`
+returned `200`. The uploaded file is removed from the sandbox's own
+filesystem (`rm -f /tmp/gwtoken`) before CSB's entrypoint or the gateway
+process starts, so it's a short-lived, sandbox-local file, never in any
+process's argv (`--upload` transfers file *content* over the
+SSH/tar channel; only the local, host-side path appears as a CLI
+argument) and readable only by the sandbox's own user (`0600`) for the
+brief window before deletion — a materially stronger position than the
+literal `--env KEY=VALUE` workaround Task 4 used for validation only.
+
+**Production form (not yet tested as a single combined invocation)** —
+how the real bootstrap script would source the value from an actual
+Podman secret and attach providers in the same command:
+
+```bash
+TMPFILE=$(mktemp); chmod 600 "$TMPFILE"
+podman secret inspect --showsecret --format '{{.SecretData}}' openclaw-gateway-token > "$TMPFILE"
+openshell sandbox create --from quay.io/redhat-et/openclaw:csb-2026.07.21 \
+  --name csb-workload --provider ... \
+  --upload "$TMPFILE:/tmp/gwtoken" \
+  -- sh -c 'export OPENCLAW_GATEWAY_TOKEN="$(cat /tmp/gwtoken)"; rm -f /tmp/gwtoken; exec /app/entrypoint.sh'
+rm -f "$TMPFILE"
+```
+
+**Likely generalizes to every other `read_secret()`-routed key** (the
+anthropic/google/xai/mistral/cohere keys CSB doesn't route through a
+provider) via the same pattern: one `--upload` per secret, one `export
+...; rm -f ...` line per secret in the wrapper, before the final `exec
+/app/entrypoint.sh`. **This is an inference from the mechanism, not
+independently tested** — only a single secret (the gateway token) in a
+single `--upload` was actually run; multiple simultaneous `--upload`
+flags plus multiple export/rm lines in one invocation (the real
+multi-key production scenario) has not been tried. If the real
+bootstrap script needs several of these keys, verify the multi-upload
+form works before relying on it. Once confirmed, this is the pattern the
+real bootstrap script (replacing `bootstrap-openshell-sandbox`) should
+use for whatever credentials CSB itself expects via `/run/secrets/*`
+rather than a provider.
+
+**Not yet re-verified:** whether `--upload`'s stated `.gitignore`
+filtering (per `--help`) affects single-file uploads (it appears
+scoped to directory uploads, but wasn't explicitly tested against a
+single file); whether this pattern still holds once combined with the
+OpenShell providers from Findings A/I/J on the same `sandbox create`
+invocation (tested here without `--provider` flags, for isolation); and
+whether multiple simultaneous `--upload`s work (see above). The tested
+command also included `--no-tty` (needed to capture the entrypoint's
+stdout for this investigation); this shouldn't affect a
+systemd-supervised production invocation but wasn't tested without it.
+
 ## The design
 
 ### Component roles
@@ -386,15 +490,16 @@ worked. `generic` needs materially more manual setup than `github`/
    /app/entrypoint.sh`), destroying/recreating rather than attempting to
    resume a stopped one. Two verified caveats on this exact command,
    both from Phase 0 Task 3 (2026-08-05):
-   - The trailing `-- /app/entrypoint.sh` is required. Without it, the
+   - The trailing `-- <command>` must be a wrapper, not the bare
+     `/app/entrypoint.sh` path: without a trailing command at all, the
      sandbox comes up idle instead of running CSB's entrypoint/gateway
-     at all — see Future consideration 6.
-   - **Even with that trailing arg, this step does not yet finish
-     successfully as written.** CSB's entrypoint immediately fails with
-     `OPENCLAW_GATEWAY_TOKEN is required on every startup`, and
-     `openshell sandbox create` has no secure way to supply it today —
-     see Future consideration 5, which blocks this step (and Task 4's
-     dashboard-reachability check) until resolved.
+     (Future consideration 6); with `/app/entrypoint.sh` alone, it fails
+     immediately on `OPENCLAW_GATEWAY_TOKEN is required on every
+     startup` (`/run/secrets/*` is unreachable inside an OpenShell
+     sandbox, Finding K). The verified working form uploads secret
+     files via `--upload` and exports them in a shell wrapper before
+     `exec`ing the real entrypoint — see Finding K for the exact command
+     and Future consideration 5 for why the naive form doesn't work.
 4. The unit starts (or the sandbox's own entrypoint starts) the dashboard
    forward bound to the guest's loopback `18789`.
 5. `openclaw gateway` runs in the foreground as the supervised process;
@@ -745,6 +850,14 @@ CSB-in-a-sandboxed-VM experience there as on a laptop, but this is
 correctly a later phase, not part of the first implementation.
 
 ### 5. No Podman-secret-mounting equivalent exists in `openshell sandbox create`
+
+**RESOLVED 2026-08-05 — see Finding K above.** `--upload` plus a wrapper
+shell command in the trailing `-- <COMMAND>` gets every `read_secret()`
+key into CSB's environment without argv exposure, verified end to end
+(gateway reached `ready`, served `200`). The original writeup below is
+kept for the root-cause narrative (why `/run/secrets` itself is
+unreachable, why `--env` alone isn't safe), not because the gap is still
+open.
 
 **Worked around for Task 4 of the Phase 0 spike only — not solved.**
 Task 4 needed the OpenClaw gateway actually running/serving the dashboard
