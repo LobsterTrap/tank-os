@@ -445,6 +445,17 @@ port (Finding E).
      existing documented dashboard-access pattern in `docs/cli.md`), so
      there is no secure-context/certificate-warning concern for a browser
      at all.
+   - **Websocket traffic was not separately tested end to end against the
+     real dashboard, and that's not a gap for either mechanism, for two
+     different reasons.** For `forward`: it's a raw TCP tunnel with no
+     protocol awareness (confirmed above — it moved a plain HTTP
+     request/response with zero involvement at the HTTP layer), so it is
+     protocol-transparent by construction; a websocket upgrade is just
+     more bytes on the same already-proven TCP path, independent of
+     whether this task separately drove one to completion. For
+     `service expose`: the question is moot, not passed — its TLS
+     handshake fails before any HTTP or websocket-upgrade negotiation
+     could even begin, so there is no protocol to characterize.
    - **The literal dashboard port (18789) could not be tested directly on
      this shared spike VM**: the VM's pre-existing baseline
      `openclaw.service`/`openclaw` container (tank-os's *current*,
@@ -481,11 +492,13 @@ port (Finding E).
      click through; it's a TLS handshake a stock browser cannot complete
      at all.
    - **Recommendation for the follow-up implementation plan: use
-     `forward`.** It is a proven, working, plain-TCP mechanism that
-     preserves the existing SSH-tunnel-then-browse UX unchanged. Do not
-     use `service expose` for the dashboard unless/until OpenShell ships a
-     supported way to provision browser-usable client certificates for
-     its hostname-routed URLs.
+     `forward`.** It is a proven, working, plain-TCP mechanism (verified
+     end to end on a substitute non-colliding port inside `csb-spike`,
+     not literally re-run against port 18789 itself — see above for why)
+     that preserves the existing SSH-tunnel-then-browse UX unchanged. Do
+     not use `service expose` for the dashboard unless/until OpenShell
+     ships a supported way to provision browser-usable client
+     certificates for its hostname-routed URLs.
 7. **Provider lifecycle across reboots.** **Verified 2026-08-05** (Phase
    0, Task 3 — hands-on against `openshell` 0.0.92 on the Task 2 VM,
    `openai`-type provider, real create/update/removal round-trips). The
