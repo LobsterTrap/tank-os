@@ -263,8 +263,10 @@ Phase 0 Task 5 (2026-08-05, VM at `192.168.64.2`, OpenShell 0.0.92) tested
 the `generic` provider type against a real self-hosted Forgejo instance
 (`http://rhel01.internal:3000/` — plain HTTP, no TLS, an internal homelab
 host) using a read-write-scoped repository/issues token. **Verdict:
-confirmed working end to end, but `generic` needs materially more manual
-setup than `github`/`gitlab`, and one step is easy to get wrong silently.**
+confirmed working end to end via a hand-authored custom provider profile
+layered on top of the `generic` type — bare `--type generic` alone never
+worked. `generic` needs materially more manual setup than `github`/
+`gitlab`, and one step is easy to get wrong silently.**
 
 - **The brief's guessed `--endpoint` flag does not exist.** `openshell
   provider create --type generic --help` exposes no endpoint/policy flag
@@ -350,7 +352,7 @@ setup than `github`/`gitlab`, and one step is easy to get wrong silently.**
 | **A new tank-os boot-time bootstrap script** | A non-interactive port of what `scripts/openclaw-csb create` does interactively: registers OpenShell providers from tank-os's existing Podman-secret store (see `docs/provisioning.md`'s Podman Secrets section, including the host-SSH-pipe method added earlier in this effort), creates the CSB sandbox fresh on every boot (mirroring tank-os's existing recreate-on-boot pattern for its current tool-call sandbox — no dependency on OpenShell's `StartupResume`), and starts the dashboard forward bound to the VM guest's own loopback `18789` (Finding E). | `bootstrap-openshell-sandbox`, most of `sync-podman-secrets`, and the `openclaw.container` Quadlet's direct image reference. |
 | **A rewritten Quadlet/systemd unit** | Runs the bootstrap script's sandbox-create invocation with the gateway command in the foreground (not backgrounded via `nohup`, unlike the reference scripts in Finding C), so systemd's `Restart=on-failure` supervises the real process, not a detached child. | `openclaw.container`. |
 | **Podman secrets for whatever CSB itself doesn't route through a provider** (gateway token, and any model keys CSB handles via `read_secret()` rather than a provider) | Matches CSB's own current mixed state (Finding G) — tank-os doesn't need to be purer than CSB is today. | `sync-podman-secrets`'s existing env-injection Quadlet drop-in generation, narrowed in scope. |
-| **service-gator** | Retire for GitHub/GitLab and Forgejo — CSB doesn't reference it at all, and Findings I/J are hands-on-verified evidence that OpenShell's `github`/`gitlab` providers, and a hand-authored `generic` provider for Forgejo, cover the same scoped-credential need natively (tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split, though `generic` needs materially more manual policy setup). Keep it (or verify Jira the same way first) for Jira, which remains untested. | Removed for GitHub/GitLab/Forgejo; kept pending for Jira. See Finding I / Finding J / Open Question 2. |
+| **service-gator** | Retire for GitHub (confirmed, Finding I) and Forgejo (confirmed, Finding J). GitLab is *inferred* to behave the same as GitHub — same built-in provider type — but was never independently hands-on tested; treat it as likely-but-unverified, not confirmed. Keep it (or verify Jira the same way first) for Jira, which remains untested. Findings I/J give hands-on-verified evidence that OpenShell's `github` provider, and a hand-authored `generic` provider for Forgejo, cover the same scoped-credential need natively (tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split, though `generic` needs materially more manual policy setup). | Removed for GitHub/Forgejo; likely removable for GitLab pending independent verification; kept pending for Jira. See Finding I / Finding J / Open Question 2. |
 
 ### Data flow
 
@@ -486,12 +488,20 @@ port (Finding E).
      verified on `amd64`, though the multi-arch manifest and Containerfile
      show no arch-conditional plugin logic.
 2. **service-gator's fate — resolved for GitHub and Forgejo, still open
-   for Jira.** **Verified 2026-08-05 (Phase 0, Task 5 — Finding J).**
-   **Recommendation: retire service-gator for GitHub/GitLab and Forgejo;
-   keep it (or plan a dedicated verification pass) for Jira until that's
-   hands-on tested the same way.**
+   for GitLab (inferred, not independently tested) and Jira (untested).**
+   **Verified 2026-08-05 (Phase 0, Task 5 — Finding J).**
+   **Recommendation: retire service-gator for GitHub (confirmed, Finding
+   I) and Forgejo (confirmed, Finding J); treat GitLab as likely covered
+   by the same built-in provider type as GitHub but not independently
+   hands-on tested — verify before dropping service-gator for GitLab
+   specifically; keep it (or plan a dedicated verification pass) for
+   Jira until that's hands-on tested the same way.**
    - **GitHub**: confirmed working via the built-in `github` provider
      type (Finding I).
+   - **GitLab**: **not independently tested**, in this task or Finding I.
+     It's *inferred* to behave like GitHub because it's also a built-in
+     provider type (per Finding A), but that inference has never been
+     hands-on verified — don't conflate "likely" with "confirmed" here.
    - **Forgejo**: confirmed working via the `generic` provider type
      against a real, plain-HTTP homelab instance — but only after
      hand-authoring an endpoint policy (no CLI flag on `provider create`
