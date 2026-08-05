@@ -435,17 +435,25 @@ port (Finding E).
 
    **2026-08-05 validation spike findings (Phase 0, Task 1):**
    - **`CSB_IMAGE_TAG` to use going forward:
-     `quay.io/redhat-et/openclaw:csb-2026.07.21`** (digest
-     `sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`
-     for `linux/arm64`). Use this immutable, date-stamped tag (or the
-     digest) in Tasks 3/4 and beyond, not `csb-latest` — CSB rebuilds on
-     a daily schedule (see workflow's "Check upstream version" job), so
-     `csb-latest` pulled on a different day could silently resolve to a
-     different image than the one validated here. This tag was
-     *discovered* by resolving `csb-latest` via a live `skopeo
-     list-tags`/`skopeo inspect` against `quay.io/redhat-et/openclaw` and
-     `podman pull`, then reading off the immutable tag it currently
-     pointed to — `csb-latest` itself is not the recommended value.
+     `quay.io/redhat-et/openclaw:csb-2026.07.21`.** Use this immutable,
+     date-stamped **tag** (a multi-arch manifest list — each host
+     resolves its own architecture automatically), not `csb-latest` —
+     CSB rebuilds on a daily schedule (see workflow's "Check upstream
+     version" job), so `csb-latest` pulled on a different day could
+     silently resolve to a different image than the one validated here.
+     **Do not substitute the digest recorded below for the tag on a
+     multi-arch host**: the digest
+     (`sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`)
+     is the `linux/arm64` manifest entry specifically (this spike ran on
+     Apple Silicon) — pinning to it on an `amd64` host would pull the
+     wrong architecture (or fail outright). The digest is recorded only
+     to make this spike's exact image reproducible on the same
+     architecture it was tested on; the tag is the value to use for
+     general-purpose pinning. This tag was *discovered* by resolving
+     `csb-latest` via a live `skopeo list-tags`/`skopeo inspect` against
+     `quay.io/redhat-et/openclaw` and `podman pull`, then reading off the
+     immutable tag it currently pointed to — `csb-latest` itself is not
+     the recommended value.
    - **Tag scheme (confirmed against `redhat-et/openclaw-csb`'s
      `.github/workflows/build.yml` and the live registry query above):**
      the doc's placeholder `csb-<arch>-<date>` guess was close but the
