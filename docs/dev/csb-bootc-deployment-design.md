@@ -317,6 +317,63 @@ port (Finding E).
    plugin set, any tank-os-specific customizations like alternate sandbox
    tool images)? Needs direct verification — likely the first concrete
    implementation step (see "Suggested first step" below).
+
+   **2026-08-05 validation spike findings (Phase 0, Task 1):**
+   - **Tag scheme (confirmed against `redhat-et/openclaw-csb`'s
+     `.github/workflows/build.yml` and a live `skopeo list-tags` against
+     `quay.io/redhat-et/openclaw`):** the doc's placeholder
+     `csb-<arch>-<date>` guess was close but the date segment is
+     zero-padded (`csb-amd64-2026.07.21`, not `csb-amd64-2026.7.21`).
+     Multi-arch manifest-list tags drop the arch segment entirely
+     (`csb-2026.07.21`, `csb-latest`, `csb-git-<short-sha>`,
+     `csb-openclaw-<openclaw-version>`). `CSB_IMAGE_TAG` for this spike
+     resolved to `quay.io/redhat-et/openclaw:csb-latest`, which at
+     pull time was the `csb-2026.07.21` build
+     (digest `sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`
+     for `linux/arm64`, the arch `podman pull` resolved to on this
+     machine).
+   - **Version comparison:** the pulled image reports
+     `OpenClaw 2026.7.1 (2d2ddc4)` via `openclaw --version`, and the
+     `org.opencontainers.image.version` label is `v2026.7.1` — matching
+     tank-os's current pin (`ARG OPENCLAW_REF=2026.7.1` in
+     `bootc/openclaw-openshell/Containerfile`) exactly. No version gap
+     today; this will drift again as CSB's scheduled build tracks
+     upstream releases (see workflow's daily "Check upstream version"
+     job), so re-verify at actual implementation time.
+   - **Plugin-set comparison:** the CSB image bundles 97 extensions
+     under `/app/dist/extensions` (OpenClaw's standard providers/tools —
+     `openai`, `anthropic`, `google`, `github-copilot`, `browser`,
+     `canvas`, etc.), but **no `openshell` extension is bundled**.
+     `openshell-sandbox` appears only inside
+     `official-external-plugin-catalog-*.js` (OpenClaw's catalog of
+     installable-but-not-bundled external plugins), consistent with
+     Finding I / the OpenShell-providers-replace-service-gator evidence
+     already in this doc. Separately, the CSB entrypoint
+     (`csb/entrypoint.sh` → `csb/configure-openclaw.mjs`) forces
+     `plugins.enabled = false` with empty `allow`/`deny` lists on every
+     startup regardless of what's bundled — CSB's "naked claw" policy
+     disables all plugins by default and expects the operator to
+     allowlist explicitly, which is a bigger behavioral difference from
+     tank-os's current setup than the plugin *inventory* alone suggests.
+   - **SSH client / `openshell` CLI bundling (Finding H redundancy
+     check):** `command -v ssh` succeeds (`/usr/bin/ssh`, pulled in
+     transitively by the RHEL AI base image, not installed explicitly)
+     but `command -v openshell` fails (exit 1) — the `openshell` CLI
+     binary is absent. **Verdict: only half redundant.** The SSH-client
+     half of `bootc/openclaw-openshell/`'s job is already covered by
+     CSB's base image; the `openshell` CLI install step still has to
+     happen somewhere. tank-os's derived-image build step can be
+     slimmed (drop the `openssh-client` install) but not dropped
+     entirely, unless the CLI is installed some other way (e.g. on the
+     VM host only, if the design ends up not needing it inside the
+     OpenClaw container).
+   - **Caveat:** `git clone` of `redhat-et/openclaw-csb` and the
+     `podman pull`/`skopeo` registry queries above all succeeded from
+     this sandbox, so these findings are directly observed, not
+     inferred. The pulled image was `linux/arm64` (this machine's
+     default `podman pull` resolution) — behavior was not separately
+     verified on `amd64`, though the multi-arch manifest and Containerfile
+     show no arch-conditional plugin logic.
 2. **service-gator's fate** — Finding I makes retirement the likely
    answer for GitHub/GitLab (hands-on verified for GitHub specifically).
    Remaining work: verify Forgejo/Jira via `generic` providers the same
