@@ -11,3 +11,6 @@
 prompt.md
 cosign.key
 cosign.pub
+
+# Subagent-driven-development scratch workspace (superpowers plugin)
+.superpowers/
