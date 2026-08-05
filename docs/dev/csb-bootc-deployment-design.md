@@ -345,6 +345,70 @@ port (Finding E).
    has no documented websocket/secure-context guarantees. Needs a hands-on
    comparison, not just documentation reading.
 
+## Future considerations (not blocking, keep in mind while designing)
+
+Raised after the design above was agreed; none of these need to be
+resolved before the first implementation spike, but they should shape how
+that spike and later phases are built.
+
+### 1. The exact path from a host credential to an OpenShell provider needs testing
+
+The doc's "Credential flow" section says the bootstrap script "reads
+[Podman secrets] and calls `openshell provider create`," but the precise
+mechanics of that handoff haven't been tested yet. One proposed path:
+host env var → Podman secret (already documented,
+`docs/provisioning.md#injecting-secrets-from-the-host`) → **VM env var** →
+`openshell provider create --from-existing` (which reads credentials from
+the calling process's own environment, per Finding I's
+`--from-existing` usage).
+
+Worth testing specifically, since it affects how widely the raw secret is
+exposed inside the guest: `--from-existing` needs the real value in the
+*bootstrap script's own process environment* at the moment it runs, which
+could mean either (a) a genuinely VM-wide env var (broader exposure than
+today's container-scoped Podman secret mount), or (b) the bootstrap
+script pulling the secret value directly into its own short-lived process
+env at the point of use — e.g. via `podman secret inspect --showsecret`
+— and never persisting it more broadly, then either exporting it just
+for that one command or using `openshell provider create --credential
+KEY=VALUE` explicitly instead of `--from-existing`. (b) keeps the same
+narrow-exposure property the rest of this design is trying to achieve;
+(a) would quietly widen it. This needs a hands-on check, not a decision
+made on paper.
+
+### 2. A version-check helper for the bundled OpenClaw/OpenShell versions
+
+Users currently have no easy way to tell whether their running tank-os VM
+is on a stale OpenClaw/OpenShell/CSB image version versus what's newly
+published. A small helper (in the spirit of the existing
+`tank-openclaw-secrets` helper) that prints the currently-running CSB
+image tag/digest and (if reachable) the latest published tag would close
+that gap — genuinely a UX improvement, not a correctness issue, so it can
+land whenever convenient after the core CSB integration is working.
+
+### 3. Sandbox policy review/update workflow, and centralized management is an open question
+
+A suggested workflow: review the current policy → download it to the host
+→ edit → upload → restart the sandbox. This covers the single-user/laptop
+case reasonably well. What's genuinely unresolved is whether/how IT Ops
+would want to manage sandbox policy *centrally* across a fleet of
+tank-os VMs (or CSB laptop installs) rather than per-machine — this needs
+input from whatever central management tooling Red Hat IT actually uses
+(not yet known), and shouldn't be designed against without that input.
+Treat as an open question to raise with IT Ops when this becomes
+relevant, not something to solve speculatively now.
+
+### 4. OpenShift Virtualization parity (future phase, not v1)
+
+tank-os already has a separate `docs/openshift-virtualization.md` and
+`deploy/base/virtualmachine.yaml` for running per-user tank-os VMs on
+OpenShift Virtualization. Once the CSB-based design above is working on a
+laptop hypervisor, the same qcow2/VM image should in principle work
+unchanged on OpenShift Virtualization too — worth explicitly verifying
+once the core design is implemented, so users get the same
+CSB-in-a-sandboxed-VM experience there as on a laptop, but this is
+correctly a later phase, not part of the first implementation.
+
 ## Suggested first implementation step
 
 Before any bootc/Quadlet rewrite: manually boot a tank-os VM, install
