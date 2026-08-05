@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart the CSB sandbox if its gateway stops responding
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tank-os/check-csb-sandbox-health

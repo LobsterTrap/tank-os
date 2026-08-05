@@ -17,8 +17,10 @@ set -euo pipefail
 #   3. Stage whichever of CSB's read_secret()-routed keys (Finding G/K)
 #      tank-os has a secret for, via --upload + a shell-wrapper trailing
 #      command -- never via --env/--credential with a literal value.
-#   4. Delete any sandbox left over from a prior start, then exec the real
-#      `openshell sandbox create` invocation as this script's own process.
+#   4. Delete any sandbox left over from a prior start, then run
+#      `openshell sandbox create` in the background and poll until the
+#      sandbox reports Ready (Finding L: the CLI's foreground attachment is
+#      cosmetic, not the supervised workload -- see step 5 below).
 
 csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
 sandbox_name="tank-csb"
@@ -132,14 +134,45 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-# upload_dir is intentionally NOT removed here. `exec` below replaces this
-# process, so no bash code can run "after openshell has read the files" --
-# the wipe-and-recreate at the top of the script (step 0) is what cleans up,
-# on the *next* run, before that run stages its own fresh secrets.
+# upload_dir is intentionally NOT removed here. The `create` below runs in
+# the background and this script exits while it's still starting up, so no
+# bash code here can run "after openshell has read the files" -- the
+# wipe-and-recreate at the top of the script (step 0) is what cleans up, on
+# the *next* run, before that run stages its own fresh secrets.
 
-exec openshell sandbox create \
+# --- 5. Create in the background, then poll for Ready (Finding L) ----------
+#
+# Finding L: killing the `openshell sandbox create` CLI process does not
+# tear down the sandbox -- the CLI's foreground attachment is cosmetic (a
+# log-follow), not the supervised workload. That means this script cannot
+# `exec` into `sandbox create` and let systemd treat that process as the
+# service (Variant A from the design doc); systemd would have nothing to
+# supervise once `create` (or a `kill` of it) returns, and Restart=on-failure
+# would never fire on a hung/wedged sandbox. Instead: background the create,
+# poll `sandbox get` until Ready (or timeout), then exit -- this script is a
+# oneshot that hands off to openclaw-healthcheck.timer for ongoing
+# supervision (see openclaw.service / openclaw-healthcheck.{service,timer}).
+timeout 600 openshell sandbox create \
   --from "$csb_image" \
   --name "$sandbox_name" \
   "${provider_args[@]}" \
   "${upload_args[@]}" \
-  -- sh -c "$wrapper"
+  --no-tty \
+  -- sh -c "$wrapper" >/dev/null 2>&1 &
+create_pid=$!
+
+ready=false
+for _ in $(seq 1 120); do
+  if openshell sandbox get "$sandbox_name" 2>/dev/null | grep -q Ready; then
+    ready=true
+    break
+  fi
+  sleep 5
+done
+
+kill "$create_pid" 2>/dev/null || true
+
+if [[ "$ready" != true ]]; then
+  echo "bootstrap-csb-sandbox: $sandbox_name did not reach Ready within 600s" >&2
+  exit 1
+fi

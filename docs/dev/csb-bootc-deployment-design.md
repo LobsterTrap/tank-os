@@ -475,6 +475,57 @@ capture the entrypoint's stdout for this investigation); this shouldn't
 affect a systemd-supervised production invocation but wasn't tested
 without it.
 
+### Finding L — the `sandbox create` CLI process is not the supervised workload; systemd needs a create-then-poll oneshot plus a health-check timer
+
+**2026-08-05, Task 2 of the implementation plan.** The Component Roles
+table below states this unit's `ExecStart` process IS the real supervised
+workload — an assumption Phase 0 never actually tested. Before locking in
+the unit shape, this was settled empirically on the VM using Task 1's
+actual `bootstrap-csb-sandbox` script (not a hand-typed reconstruction of
+the simpler command this doc originally assumed).
+
+**Test:** ran the script to bring up `tank-csb`, confirmed `Ready` and a
+`200` from the gateway, found the script's own `openshell sandbox create
+... -- sh -c '...'` process via `pgrep -af`, then sent it a plain `kill`
+(not a dropped SSH session) — the same signal `systemctl stop` or a crash
+would deliver:
+
+```
+$ pgrep -af "sandbox create.*tank-csb"
+95935 openshell sandbox create --from quay.io/redhat-et/openclaw:csb-2026.07.21 --name tank-csb ...
+$ kill 95935
+```
+
+**Result, 3 seconds later:** `openshell sandbox get tank-csb` still
+reported `Phase: Ready`, and `openshell sandbox exec -n tank-csb --no-tty
+-- curl ... http://127.0.0.1:18789/` still returned `200`. Killing the CLI
+process had no effect on the sandbox or its gateway — the CLI's foreground
+attachment to `sandbox create` is cosmetic (a log-follow), not the
+supervised process. The actual `openclaw` workload lives in CSB's own
+container runtime behind OpenShell's gateway, entirely independent of
+whether anything on the host is still attached to the CLI invocation that
+created it.
+
+**Conclusion:** the "direct supervision" unit shape (`Type=simple`,
+`ExecStart=` the bootstrap script, letting systemd track that process as
+the service) cannot work — systemd would have nothing meaningful to
+supervise once `create` returns or is killed, and `Restart=on-failure`
+would never fire for a wedged or unhealthy sandbox. `bootstrap-csb-sandbox`
+was changed accordingly: its final step now backgrounds `sandbox create`,
+polls `sandbox get` for `Ready` (bounded at 600s), then exits — a oneshot,
+not a long-running foreground process. `openclaw.service` ships as
+`Type=oneshot, RemainAfterExit=yes`, with a separate
+`openclaw-healthcheck.timer` (every 30s, after a 2-minute boot grace)
+curling the gateway directly and calling `systemctl --user restart
+openclaw.service` on failure — this is what actually provides ongoing
+supervision, not systemd's built-in process tracking. End-to-end validated
+on the VM: with the unit installed as a user service, deleting `tank-csb`
+out from under it (simulating a crash) and then running the health-check
+script triggered `systemctl --user restart openclaw.service`, which
+re-ran `bootstrap-csb-sandbox` and brought `tank-csb` back to `Ready`
+(exercising the same delete-then-poll-until-gone recreate path Finding K's
+script already relies on for every start).
+
 ## The design
 
 ### Component roles

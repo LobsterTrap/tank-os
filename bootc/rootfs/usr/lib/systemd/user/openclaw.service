@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClaw gateway inside a CSB OpenShell sandbox (create-only; see openclaw-healthcheck.timer for supervision)
+After=openshell-gateway.service
+Wants=openshell-gateway.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tank-os/bootstrap-csb-sandbox
+ExecStartPost=-/usr/bin/openshell forward start 18789 tank-csb --background
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
