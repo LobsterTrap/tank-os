@@ -316,22 +316,30 @@ port (Finding E).
    written) cover everything tank-os users currently rely on (OpenClaw version,
    plugin set, any tank-os-specific customizations like alternate sandbox
    tool images)? Needs direct verification — likely the first concrete
-   implementation step (see "Suggested first step" below).
+   implementation step (see "Suggested first step" below). **Verified
+   2026-08-05** (Phase 0, Task 1 — findings below); re-check before
+   actual implementation since CSB rebuilds daily.
 
    **2026-08-05 validation spike findings (Phase 0, Task 1):**
+   - **`CSB_IMAGE_TAG` to use going forward:
+     `quay.io/redhat-et/openclaw:csb-2026.07.21`** (digest
+     `sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`
+     for `linux/arm64`). Use this immutable, date-stamped tag (or the
+     digest) in Tasks 3/4 and beyond, not `csb-latest` — CSB rebuilds on
+     a daily schedule (see workflow's "Check upstream version" job), so
+     `csb-latest` pulled on a different day could silently resolve to a
+     different image than the one validated here. This tag was
+     *discovered* by resolving `csb-latest` via a live `skopeo
+     list-tags`/`skopeo inspect` against `quay.io/redhat-et/openclaw` and
+     `podman pull`, then reading off the immutable tag it currently
+     pointed to — `csb-latest` itself is not the recommended value.
    - **Tag scheme (confirmed against `redhat-et/openclaw-csb`'s
-     `.github/workflows/build.yml` and a live `skopeo list-tags` against
-     `quay.io/redhat-et/openclaw`):** the doc's placeholder
-     `csb-<arch>-<date>` guess was close but the date segment is
-     zero-padded (`csb-amd64-2026.07.21`, not `csb-amd64-2026.7.21`).
-     Multi-arch manifest-list tags drop the arch segment entirely
-     (`csb-2026.07.21`, `csb-latest`, `csb-git-<short-sha>`,
-     `csb-openclaw-<openclaw-version>`). `CSB_IMAGE_TAG` for this spike
-     resolved to `quay.io/redhat-et/openclaw:csb-latest`, which at
-     pull time was the `csb-2026.07.21` build
-     (digest `sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`
-     for `linux/arm64`, the arch `podman pull` resolved to on this
-     machine).
+     `.github/workflows/build.yml` and the live registry query above):**
+     the doc's placeholder `csb-<arch>-<date>` guess was close but the
+     date segment is zero-padded (`csb-amd64-2026.07.21`, not
+     `csb-amd64-2026.7.21`). Multi-arch manifest-list tags drop the arch
+     segment entirely (`csb-2026.07.21`, `csb-latest`,
+     `csb-git-<short-sha>`, `csb-openclaw-<openclaw-version>`).
    - **Version comparison:** the pulled image reports
      `OpenClaw 2026.7.1 (2d2ddc4)` via `openclaw --version`, and the
      `org.opencontainers.image.version` label is `v2026.7.1` — matching
@@ -348,13 +356,22 @@ port (Finding E).
      `official-external-plugin-catalog-*.js` (OpenClaw's catalog of
      installable-but-not-bundled external plugins), consistent with
      Finding I / the OpenShell-providers-replace-service-gator evidence
-     already in this doc. Separately, the CSB entrypoint
-     (`csb/entrypoint.sh` → `csb/configure-openclaw.mjs`) forces
-     `plugins.enabled = false` with empty `allow`/`deny` lists on every
-     startup regardless of what's bundled — CSB's "naked claw" policy
-     disables all plugins by default and expects the operator to
-     allowlist explicitly, which is a bigger behavioral difference from
-     tank-os's current setup than the plugin *inventory* alone suggests.
+     already in this doc.
+   - **CSB force-disables all plugins by default ("naked claw"
+     policy) — action item for Tasks 3/4.** The CSB entrypoint
+     (`csb/entrypoint.sh` → `csb/configure-openclaw.mjs`) unconditionally
+     sets `plugins.enabled = false` with empty `allow`/`deny` lists on
+     *every* startup, regardless of what's bundled or previously
+     configured — the config is rewritten fresh each run and CSB's
+     policy is always restored. This is a bigger behavioral difference
+     from tank-os's current setup than the plugin-inventory gap above:
+     even after installing `openshell-sandbox` from the catalog, it will
+     stay inert unless whoever implements sandbox creation also plumbs
+     an explicit allowlist through (`plugins.allow` and/or
+     `OPENCLAW_ALLOWED_SKILLS`/`agents.defaults.skills`). Whichever task
+     stands up the CSB sandbox with OpenShell providers (Task 3 or 4)
+     needs to account for this or the sandbox will silently come up with
+     no tools enabled.
    - **SSH client / `openshell` CLI bundling (Finding H redundancy
      check):** `command -v ssh` succeeds (`/usr/bin/ssh`, pulled in
      transitively by the RHEL AI base image, not installed explicitly)
