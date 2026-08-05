@@ -11,18 +11,18 @@ GitHub/Forgejo credential-scoping via providers works end to end (Open
 Question 2 / Findings I, J), and there is now a verified-working,
 argv-safe way to supply CSB's `OPENCLAW_GATEWAY_TOKEN` via `--upload`
 plus a shell wrapper (Finding K, closes out issue #41 and Future
-consideration 5) — **verified for the token alone, without providers
-attached; combining `--upload` with `--provider` flags and with
-multiple secrets at once in a single invocation (the actual production
-shape) is a reasonable inference from the mechanism but not yet
-independently tested**, so treat that combination as the first thing to
-confirm when writing the real bootstrap script, not as already proven.
-Two more follow-ups remain known but non-blocking: GitLab is inferred,
-not independently hands-on verified, to behave like GitHub (Open
-Question 2), and Jira is untested (Open Question 2). Written to hand off
-to a fresh session for implementation planning (`writing-plans` skill or
-equivalent) — this doc is meant to be self-contained enough that the next
-session doesn't need this conversation's history.
+consideration 5) — **confirmed 2026-08-05 to also compose correctly with
+`--provider` flags and with multiple simultaneous `--upload` secrets in
+one invocation**, the actual production shape the real bootstrap script
+needs. One follow-up remains: this was verified against the built-in
+`test-openai` provider, not re-run against a Forgejo/GitHub-shaped
+provider in the same combined invocation. Two more follow-ups remain
+known but non-blocking: GitLab is inferred, not independently hands-on
+verified, to behave like GitHub (Open Question 2), and Jira is untested
+(Open Question 2). Written to hand off to a fresh session for
+implementation planning (`writing-plans` skill or equivalent) — this doc
+is meant to be self-contained enough that the next session doesn't need
+this conversation's history.
 
 ## Summary
 
@@ -422,9 +422,8 @@ argument) and readable only by the sandbox's own user (`0600`) for the
 brief window before deletion — a materially stronger position than the
 literal `--env KEY=VALUE` workaround Task 4 used for validation only.
 
-**Production form (not yet tested as a single combined invocation)** —
-how the real bootstrap script would source the value from an actual
-Podman secret and attach providers in the same command:
+**Production form** — how the real bootstrap script sources the value
+from an actual Podman secret and attaches providers in the same command:
 
 ```bash
 TMPFILE=$(mktemp); chmod 600 "$TMPFILE"
@@ -436,20 +435,37 @@ openshell sandbox create --from quay.io/redhat-et/openclaw:csb-2026.07.21 \
 rm -f "$TMPFILE"
 ```
 
-**Likely generalizes to every other `read_secret()`-routed key** (the
+**Confirmed 2026-08-05: `--upload` + `--provider` + multiple secrets in
+one invocation all compose correctly.** Two follow-up spikes against the
+same VM, using the pre-existing `test-openai` provider (no new
+credential needed — this tests the mechanism, not Forgejo specifically):
+
+1. `--provider test-openai --upload <throwaway-token>:/tmp/gwtoken` plus
+   the same shell wrapper: sandbox reached `Ready`, and a
+   `sandbox exec ... curl http://127.0.0.1:18789/` from inside it
+   returned `200` — the provider's credential and the uploaded token
+   coexist without conflict, and attaching a provider doesn't interfere
+   with the entrypoint-bypassing wrapper command.
+2. Two simultaneous `--upload` flags (`/tmp/gwtoken` and a second
+   throwaway secret at `/tmp/xtrakey`), each with its own `export ...;
+   rm -f ...` line in the wrapper, alongside `--provider test-openai`:
+   both files uploaded, both env vars exported, gateway logged
+   `[gateway] ready` and resolved `openai/gpt-5.5` as its agent model
+   (proving the provider's key was live at the same time as both
+   uploaded secrets). Both spike sandboxes were deleted after
+   verification.
+
+**Generalizes to every other `read_secret()`-routed key** (the
 anthropic/google/xai/mistral/cohere keys CSB doesn't route through a
 provider) via the same pattern: one `--upload` per secret, one `export
 ...; rm -f ...` line per secret in the wrapper, before the final `exec
-/app/entrypoint.sh`. **This is an inference from the mechanism, not
-independently tested** — only a single secret (the gateway token) in a
-single `--upload` was actually run; multiple simultaneous `--upload`
-flags plus multiple export/rm lines in one invocation (the real
-multi-key production scenario) has not been tried. If the real
-bootstrap script needs several of these keys, verify the multi-upload
-form works before relying on it. Once confirmed, this is the pattern the
-real bootstrap script (replacing `bootstrap-openshell-sandbox`) should
-use for whatever credentials CSB itself expects via `/run/secrets/*`
-rather than a provider.
+/app/entrypoint.sh`. This is the pattern the real bootstrap script
+(replacing `bootstrap-openshell-sandbox`) should use for whatever
+credentials CSB itself expects via `/run/secrets/*` rather than a
+provider. Not yet re-verified against a real Forgejo/GitHub provider in
+this exact combination (only `test-openai` was used) — the provider
+*type* shouldn't matter to this mechanism, but that's an assumption, not
+a re-run test.
 
 **Not yet re-verified:** whether `--upload`'s stated `.gitignore`
 filtering (per `--help`) affects single-file uploads (it appears
