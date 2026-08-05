@@ -595,6 +595,33 @@ Leave `ARG OPENSHELL_VERSION=0.0.92` and the `dnf install` of the
 gateway still run on the VM host itself; only the derived-image build arg
 is retired.
 
+**Also enable the new units at build time, the same way
+`openshell-gateway.service` already is** (gap found during Task 2's own
+implementation — Task 2 ships `openclaw.service` and
+`openclaw-healthcheck.timer` as plain files under
+`bootc/rootfs/usr/lib/systemd/user/`, but nothing symlinks them into a
+`.wants/` directory, so they'd never actually start on boot). Immediately
+after the existing:
+
+```dockerfile
+    ln -sf /usr/lib/systemd/user/openshell-gateway.service \
+      /etc/systemd/user/default.target.wants/openshell-gateway.service; \
+```
+
+add:
+
+```dockerfile
+    ln -sf /usr/lib/systemd/user/openclaw.service \
+      /etc/systemd/user/default.target.wants/openclaw.service; \
+    mkdir -p /etc/systemd/user/timers.target.wants; \
+    ln -sf /usr/lib/systemd/user/openclaw-healthcheck.timer \
+      /etc/systemd/user/timers.target.wants/openclaw-healthcheck.timer; \
+```
+
+(the timer unit itself, not `openclaw-healthcheck.service`, is what gets
+enabled — the service only runs on-demand when the timer fires, per its
+own `[Install] WantedBy=timers.target`).
+
 - [ ] **Step 2: Delete the retired files**
 
 ```bash
