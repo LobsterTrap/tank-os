@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Replaces bootstrap-openshell-sandbox and bootstrap-openclaw's job for the
+# CSB-based architecture (see docs/dev/csb-bootc-deployment-design.md's
+# "The design" section). Runs as the ExecStart of openclaw.service (a plain
+# systemd --user unit, not a Podman Quadlet -- CSB's own image is run via
+# `openshell sandbox create`, not `podman run` directly).
+#
+# Four jobs, all idempotent except the sandbox itself (recreated fresh on
+# every start -- Open Question 7's "no dependency on StartupResume"):
+#   1. Auto-provision the gateway token as a Podman secret on first boot,
+#      mirroring bootstrap-openclaw's old self-service UX.
+#   2. Register/update OpenShell providers for whichever of CSB's
+#      provider-routed credentials (openai, github) tank-os has a secret
+#      for (Finding I).
+#   3. Stage whichever of CSB's read_secret()-routed keys (Finding G/K)
+#      tank-os has a secret for, via --upload + a shell-wrapper trailing
+#      command -- never via --env/--credential with a literal value.
+#   4. Delete any sandbox left over from a prior start, then exec the real
+#      `openshell sandbox create` invocation as this script's own process.
+
+csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
+sandbox_name="tank-csb"
+
+secret_exists() {
+  podman secret inspect "$1" >/dev/null 2>&1
+}
+
+# Never `export VAR="$(cmd)"` directly -- under `set -euo pipefail`,
+# export/local/declare mask the command substitution's exit status.
+# Capture into a plain variable with an explicit check first, every time.
+read_secret_value() {
+  local name="$1" value
+  value="$(podman secret inspect --showsecret --format '{{.SecretData}}' "$name")" || exit 1
+  printf '%s' "$value"
+}
+
+# --- 1. Auto-provision the gateway token -----------------------------------
+
+if ! secret_exists openclaw_gateway_token; then
+  openssl rand -hex 32 | podman secret create openclaw_gateway_token -
+fi
+
+# --- 2. Provider registration (Finding I, Open Question 7) -----------------
+
+register_provider() {
+  local name="$1" type="$2" env_var="$3" secret_name="$4"
+  secret_exists "$secret_name" || return 0
+  export "$env_var"="$(read_secret_value "$secret_name")"
+  if openshell provider get "$name" >/dev/null 2>&1; then
+    openshell provider update "$name" --from-existing
+  else
+    openshell provider create --name "$name" --type "$type" --from-existing
+  fi
+  unset "$env_var"
+}
+
+register_provider openai-claw openai OPENAI_API_KEY openai_api_key
+register_provider github-claw github GH_TOKEN gh_token
+
+provider_args=()
+openshell provider get openai-claw >/dev/null 2>&1 && provider_args+=(--provider openai-claw)
+openshell provider get github-claw >/dev/null 2>&1 && provider_args+=(--provider github-claw)
+
+# --- 3. Stage non-provider-routed secrets for --upload (Finding K) ---------
+
+upload_dir="$(mktemp -d)"
+trap 'rm -rf "$upload_dir"' EXIT
+upload_args=()
+wrapper_lines=()
+
+stage_secret() {
+  local secret_name="$1" env_var="$2" required="$3" f
+  if ! secret_exists "$secret_name"; then
+    if [[ "$required" == "required" ]]; then
+      echo "bootstrap-csb-sandbox: required secret '$secret_name' not found" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  f="$upload_dir/$env_var"
+  ( umask 077; read_secret_value "$secret_name" > "$f" )
+  upload_args+=(--upload "$f:/tmp/$env_var")
+  wrapper_lines+=("export $env_var=\"\$(cat /tmp/$env_var)\"; rm -f /tmp/$env_var;")
+}
+
+stage_secret openclaw_gateway_token OPENCLAW_GATEWAY_TOKEN required
+stage_secret anthropic_api_key      ANTHROPIC_API_KEY      optional
+if secret_exists gemini_api_key; then
+  stage_secret gemini_api_key GOOGLE_API_KEY optional
+elif secret_exists google_api_key; then
+  stage_secret google_api_key GOOGLE_API_KEY optional
+fi
+stage_secret xai_api_key     XAI_API_KEY     optional
+stage_secret mistral_api_key MISTRAL_API_KEY optional
+stage_secret cohere_api_key  COHERE_API_KEY  optional
+
+wrapper="$(printf '%s ' "${wrapper_lines[@]}")exec /app/entrypoint.sh"
+
+# --- 4. Recreate the sandbox fresh every start, then exec into it ----------
+
+openshell sandbox delete "$sandbox_name" --force >/dev/null 2>&1 || true
+
+exec openshell sandbox create \
+  --from "$csb_image" \
+  --name "$sandbox_name" \
+  "${provider_args[@]}" \
+  "${upload_args[@]}" \
+  -- sh -c "$wrapper"
