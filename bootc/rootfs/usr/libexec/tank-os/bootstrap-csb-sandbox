@@ -22,10 +22,30 @@ set -euo pipefail
 
 csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
 sandbox_name="tank-csb"
+upload_dir="/dev/shm/tank-os-csb-upload"
 
 secret_exists() {
   podman secret inspect "$1" >/dev/null 2>&1
 }
+
+# --- 0. Wipe any staged-secret leftovers from a prior run -------------------
+#
+# upload_dir is a FIXED, well-known path (tmpfs-backed, never touches
+# persistent disk) rather than a mktemp -d location. This is deliberate: the
+# script ends with `exec openshell sandbox create ...`, which replaces this
+# bash process entirely -- there is no bash process left afterward to run a
+# cleanup `rm`, and any `rm` placed before `exec` would delete the files
+# before `openshell` (the thing that actually reads them via --upload) has
+# had a chance to start. So cleanup cannot happen at the *end* of a
+# successful run; instead, every run wipes and recreates this fixed
+# directory at the *start*, before staging any new secrets into it. This
+# mirrors the same "delete-then-create fresh every start" philosophy step 4
+# already applies to the sandbox itself. Exposure is bounded to "the
+# currently-running instance's files, for as long as that instance is
+# alive" rather than "accumulating leftover directories forever."
+rm -rf "$upload_dir"
+mkdir -p "$upload_dir"
+chmod 700 "$upload_dir"
 
 # Never `export VAR="$(cmd)"` directly -- under `set -euo pipefail`,
 # export/local/declare mask the command substitution's exit status.
@@ -66,8 +86,6 @@ openshell provider get github-claw >/dev/null 2>&1 && provider_args+=(--provider
 
 # --- 3. Stage non-provider-routed secrets for --upload (Finding K) ---------
 
-upload_dir="$(mktemp -d)"
-trap 'rm -rf "$upload_dir"' EXIT
 upload_args=()
 wrapper_lines=()
 
@@ -103,8 +121,21 @@ wrapper="$(printf '%s ' "${wrapper_lines[@]}")exec /app/entrypoint.sh"
 
 openshell sandbox delete "$sandbox_name" >/dev/null 2>&1 || true
 
-# Clean up upload_dir before exec (files only needed during sandbox-create read)
-rm -rf "$upload_dir"
+# `openshell sandbox delete` returning does not guarantee the name is free
+# yet -- observed in testing: an immediate `sandbox create` with the same
+# name can fail with "already exists" right after `delete` reported success,
+# because the backend releases the name asynchronously. Poll until the name
+# is actually gone (or give up and let `create` below surface a real
+# conflict) instead of racing it.
+for _ in $(seq 1 30); do
+  openshell sandbox get "$sandbox_name" >/dev/null 2>&1 || break
+  sleep 1
+done
+
+# upload_dir is intentionally NOT removed here. `exec` below replaces this
+# process, so no bash code can run "after openshell has read the files" --
+# the wipe-and-recreate at the top of the script (step 0) is what cleans up,
+# on the *next* run, before that run stages its own fresh secrets.
 
 exec openshell sandbox create \
   --from "$csb_image" \
