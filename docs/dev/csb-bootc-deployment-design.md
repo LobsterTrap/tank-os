@@ -280,8 +280,12 @@ dropping service-gator entirely.
    from whatever Podman secrets already exist (reusing the existing
    `sync-podman-secrets`-style "only wire up what's present" pattern).
 3. The bootstrap unit creates the CSB sandbox fresh (`openshell sandbox
-   create --from quay.io/redhat-et/openclaw:csb-<tag> --provider ...`),
-   destroying/recreating rather than attempting to resume a stopped one.
+   create --from quay.io/redhat-et/openclaw:csb-<tag> --provider ... --
+   /app/entrypoint.sh` — the trailing `-- /app/entrypoint.sh` is
+   required; see Future consideration 6, verified 2026-08-05, Phase 0
+   Task 3 — without it the sandbox comes up idle instead of running
+   CSB's entrypoint/gateway), destroying/recreating rather than
+   attempting to resume a stopped one.
 4. The unit starts (or the sandbox's own entrypoint starts) the dashboard
    forward bound to the guest's loopback `18789`.
 5. `openclaw gateway` runs in the foreground as the supervised process;
@@ -418,15 +422,47 @@ port (Finding E).
    `service expose`'s hostname-based routing is a single-command flow but
    has no documented websocket/secure-context guarantees. Needs a hands-on
    comparison, not just documentation reading.
-7. **Provider lifecycle across reboots.** The Data flow's Boot step 3
-   (`openshell sandbox create ... destroying/recreating`) covers the
-   *sandbox's* lifecycle explicitly, but step 2's `ExecStartPre` provider
-   registration doesn't yet say what happens on the second and later
-   boots: stable provider names so re-registration is idempotent rather
-   than accumulating duplicates, get-or-create/update semantics when a
-   secret's value has changed since the last boot, and removal/detachment
-   of providers whose backing secret has disappeared. Needs a decision
-   before the bootstrap script is written, not just at review time.
+7. **Provider lifecycle across reboots.** **Verified 2026-08-05** (Phase
+   0, Task 3 — hands-on against `openshell` 0.0.92 on the Task 2 VM,
+   `openai`-type provider, real create/update/removal round-trips). The
+   bootstrap script needs an explicit create-then-update pattern, not a
+   bare `create` call on every boot:
+   - **`openshell provider create --name <X> --from-existing` is not a
+     safe get-or-create.** Re-running it unchanged against an existing
+     name errors (`provider already exists`, exit 1) instead of
+     succeeding or duplicating — `provider list`'s row count correctly
+     stayed at 1, so it fails safely, but a bare `create` in
+     `ExecStartPre` would fail on every boot after the first.
+   - **`openshell provider update <name> --from-existing` is the
+     idempotent update path.** After rotating the backing Podman secret
+     and re-exporting it, `update --from-existing` bumped the provider's
+     `Resource version` from 1 to 2 and stored the new credential value.
+     The bootstrap script should do `create ... || update ...` (or check
+     existence via `provider get` first), not assume `create` alone is
+     idempotent.
+   - **Removing the backing Podman secret does not detach or invalidate
+     an already-created provider.** `openshell provider create`/`update`
+     copy the credential value into OpenShell's own store; it is not a
+     live reference to the Podman secret. After `podman secret rm
+     test_openai_key`, `openshell provider get test-openai` still
+     returned the provider with its last-synced credential, and a CSB
+     sandbox created afterward with `--provider test-openai` still
+     resolved through it. Re-*syncing* a provider once its secret is
+     gone (`update --from-existing`) does fail, but only because
+     `openshell` itself then reports "no existing local
+     credentials/config found" for the empty value it was handed — see
+     the bash caveat immediately below for why the *shell script*
+     doesn't fail earlier where you'd expect.
+   - **Caveat for whoever writes the bootstrap script, found while
+     testing the above:** `export VAR="$(podman secret inspect
+     --showsecret ...)"` under `set -euo pipefail` does **not** abort
+     the script if the inner command fails — `export` (like `local`/
+     `declare`) masks the command substitution's exit status, a known
+     bash gotcha. Hands-on repro: `export FOO="$(false)"` under `set
+     -euo pipefail` exits 0 with `FOO` empty. Don't rely on `set -e` to
+     catch a missing/removed secret at the `export` line; check the
+     `podman secret inspect` exit status explicitly first, e.g. `val="$(podman
+     secret inspect ...)" || exit 1` split from the `export`.
 
 ## Future considerations (not blocking, keep in mind while designing)
 
@@ -494,6 +530,60 @@ unchanged on OpenShift Virtualization too — worth explicitly verifying
 once the core design is implemented, so users get the same
 CSB-in-a-sandboxed-VM experience there as on a laptop, but this is
 correctly a later phase, not part of the first implementation.
+
+### 5. No Podman-secret-mounting equivalent exists in `openshell sandbox create`
+
+CSB's own `read_secret()` (Finding G) reads `/run/secrets/<name>` for
+keys it doesn't route through an OpenShell provider — notably
+`OPENCLAW_GATEWAY_TOKEN`, which `csb/entrypoint.sh` requires on *every*
+startup (fatal error otherwise), plus the anthropic/google/xai/mistral/
+cohere keys. **Verified 2026-08-05 (Phase 0, Task 3):** neither
+`openshell sandbox create --help` nor `openshell --help`'s full command
+list (`sandbox`, `service`, `forward`, `logs`, `policy`, `settings`,
+`provider`, `gateway`, `status`, `inference`, `doctor`, `term`,
+`completions`, `ssh-proxy`) has a `secret` subcommand or `--secret`
+flag. The one flag that injects arbitrary env vars, `--env
+<KEY=VALUE>`, only accepts the literal-value form — unlike
+`--credential`, it has no bare-`KEY` env-lookup form (confirmed:
+`--env SOME_KEY` alone errors with `--env expects KEY=VALUE, got
+'SOME_KEY'`), so using it for a real secret would put the raw value in
+the sandbox-create process's argv, exactly the exposure this doc's
+security constraint says to avoid. Hands-on confirmation of the actual
+failure mode this causes: creating `csb-spike` and explicitly invoking
+the image's real entrypoint (`-- /app/entrypoint.sh`, see item 6 below)
+produced `ERROR: OPENCLAW_GATEWAY_TOKEN is required on every startup.
+Provide it via -e or --secret openclaw-gateway-token.` — there is no
+secure, supported way to satisfy this today. **Flagging for the
+follow-up implementation plan, not solved here** per Task 3's scope;
+options to evaluate later include mounting a plaintext file via
+`--upload` before the entrypoint reads it (weaker than a real secret
+mount) or an upstream feature request to OpenShell for a native
+`--secret` flag.
+
+### 6. `openshell sandbox create` with no trailing command bypasses CSB's entrypoint entirely
+
+Finding G states CSB's `csb/entrypoint.sh` "execs `openclaw gateway
+--allow-unconfigured` in the foreground" inside the container.
+**Verified 2026-08-05 (Phase 0, Task 3) that this is only true if
+`sandbox create` is given an explicit trailing command that invokes
+it.** Run exactly as this doc's Data flow step 3 and Task 3's brief
+describe it (`openshell sandbox create --from $CSB_IMAGE_TAG --name
+csb-spike --provider test-openai`, no `--` command), the sandbox
+reaches `Ready`/`healthy` — but `podman top` on the resulting container
+shows only OpenShell's own supervisor
+(`/opt/openshell/bin/openshell-sandbox`) plus a keep-alive `sleep
+infinity` and an interactive `bash -i`. The image's actual
+`ENTRYPOINT` (`/app/entrypoint.sh`, confirmed via `podman inspect` on
+the image itself) never runs, so the OpenClaw gateway never starts.
+`sandbox create --help` explains why: with no `[COMMAND]...` after
+`--`, it "defaults to an interactive shell," silently overriding the
+image's baked-in entrypoint rather than composing with it. Re-running
+with an explicit `-- /app/entrypoint.sh` does invoke the real
+entrypoint (and immediately surfaces item 5's gateway-token gap).
+**Action item for the bootstrap script:** `sandbox create` must end
+with `-- /app/entrypoint.sh` (or equivalent) to actually run CSB's
+startup logic — the bare form in this doc's current Data flow step 3
+only produces an idle shell container.
 
 ## Suggested first implementation step
 
