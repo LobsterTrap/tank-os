@@ -45,9 +45,10 @@ fi
 # --- 2. Provider registration (Finding I, Open Question 7) -----------------
 
 register_provider() {
-  local name="$1" type="$2" env_var="$3" secret_name="$4"
+  local name="$1" type="$2" env_var="$3" secret_name="$4" secval
   secret_exists "$secret_name" || return 0
-  export "$env_var"="$(read_secret_value "$secret_name")"
+  secval="$(read_secret_value "$secret_name")" || exit 1
+  export "$env_var"="$secval"
   if openshell provider get "$name" >/dev/null 2>&1; then
     openshell provider update "$name" --from-existing
   else
@@ -100,7 +101,10 @@ wrapper="$(printf '%s ' "${wrapper_lines[@]}")exec /app/entrypoint.sh"
 
 # --- 4. Recreate the sandbox fresh every start, then exec into it ----------
 
-openshell sandbox delete "$sandbox_name" --force >/dev/null 2>&1 || true
+openshell sandbox delete "$sandbox_name" >/dev/null 2>&1 || true
+
+# Clean up upload_dir before exec (files only needed during sandbox-create read)
+rm -rf "$upload_dir"
 
 exec openshell sandbox create \
   --from "$csb_image" \
