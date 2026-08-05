@@ -424,16 +424,68 @@ port (Finding E).
    pivot — both conversations were planned but not yet held as of this
    doc's writing.
 6. **Whether raw OpenShell `forward` or `service expose` is the better fit**
-   for binding the dashboard to the guest's loopback (Finding E) — `forward`
-   is a generic TCP tunnel closer to tank-os's current mechanism;
-   `service expose`'s hostname-based routing is a single-command flow but
-   has no documented websocket/secure-context guarantees. Needs a hands-on
-   comparison, not just documentation reading. **Blocked on Future
-   consideration 5** if the comparison requires the actual OpenClaw
-   gateway/dashboard to be serving traffic inside the sandbox — as of
-   2026-08-05 (Phase 0 Task 3) the gateway cannot start at all without
-   first resolving the `OPENCLAW_GATEWAY_TOKEN`/secret-mounting gap
-   described there.
+   for binding the dashboard to the guest's loopback (Finding E). **Resolved
+   2026-08-05 (Phase 0, Task 4) — recommendation: use `forward`.**
+   Hands-on comparison against `openshell` 0.0.92 on the Task 2/3 VM, with
+   the CSB gateway actually running inside `csb-spike` (see Future
+   consideration 5 for how the `OPENCLAW_GATEWAY_TOKEN` blocker was worked
+   around for this test only):
+   - **`openshell forward start <port> <sandbox> --background`** is a
+     literal TCP tunnel: the host-side bind port and the sandbox-internal
+     target port must be the *same* number (confirmed empirically — a
+     mismatched pair, host `28789` against a sandbox process actually
+     listening on a different port, produced `curl: (52) Empty reply from
+     server`; a matched pair, `28791` on both sides, worked). Verified
+     end-to-end with a throwaway plain-HTTP listener inside `csb-spike`:
+     `ssh -L 28791:127.0.0.1:28791` from the laptop, through
+     `openshell forward`, into the sandbox's isolated network namespace,
+     returned a clean `HTTP/1.1 200 OK` with the expected body. No TLS
+     appears anywhere in this path — it's plain HTTP end to end (the outer
+     SSH tunnel is the only encryption layer, exactly matching tank-os's
+     existing documented dashboard-access pattern in `docs/cli.md`), so
+     there is no secure-context/certificate-warning concern for a browser
+     at all.
+   - **The literal dashboard port (18789) could not be tested directly on
+     this shared spike VM**: the VM's pre-existing baseline
+     `openclaw.service`/`openclaw` container (tank-os's *current*,
+     pre-CSB dashboard, `quay.io/redhat-et/tank-claw-openshell:2026.7.1`)
+     already binds `0.0.0.0:18789` directly via host networking, so
+     `openshell forward start 18789 csb-spike` fails with "Port 18789 is
+     already in use." This is an artifact of validating the old and new
+     models side by side on one VM, not a design flaw — Finding C's
+     ONE-sandbox model means the baseline service is retired when CSB
+     takes over, so this collision would not occur in the target
+     architecture. Stopping the baseline service to clear the port for
+     this test was considered and explicitly not done (out of scope for a
+     validation spike to disrupt a service it didn't create). Internally,
+     `curl http://127.0.0.1:18789/` from inside `csb-spike` itself
+     returned `200 OK`, confirming the real dashboard is alive and
+     healthy — only the external-forward hop on that exact port number was
+     untested, and the generic mechanism was proven working with a
+     different, non-colliding port on the same sandbox above.
+   - **`openshell service expose <sandbox> <port>`** does *not* bind a
+     host TCP port at all — it registers hostname-based routing through
+     OpenShell's own gateway control port (`17670`), returning a URL like
+     `https://default--csb-spike.openshell.localhost:17670/`. This
+     sidesteps the port-collision problem entirely, so it *was* tested
+     directly against the real dashboard target
+     (`127.0.0.1:18789` inside `csb-spike`). Result: the TLS handshake on
+     that URL requires a **client certificate** (`curl -k` against it
+     fails with `SSL routines::tlsv13 alert certificate required` after
+     the server explicitly sends `Request CERT`). There is no
+     `openshell` flag or subcommand to obtain or install a client
+     certificate for an ordinary browser, and no `--insecure`-equivalent
+     that disables server-side client-cert enforcement. **This is a harder
+     failure than Open Question 6 anticipated** — it isn't a missing
+     secure-context guarantee or a self-signed-cert warning a user could
+     click through; it's a TLS handshake a stock browser cannot complete
+     at all.
+   - **Recommendation for the follow-up implementation plan: use
+     `forward`.** It is a proven, working, plain-TCP mechanism that
+     preserves the existing SSH-tunnel-then-browse UX unchanged. Do not
+     use `service expose` for the dashboard unless/until OpenShell ships a
+     supported way to provision browser-usable client certificates for
+     its hostname-routed URLs.
 7. **Provider lifecycle across reboots.** **Verified 2026-08-05** (Phase
    0, Task 3 — hands-on against `openshell` 0.0.92 on the Task 2 VM,
    `openai`-type provider, real create/update/removal round-trips). The
@@ -548,13 +600,23 @@ correctly a later phase, not part of the first implementation.
 
 ### 5. No Podman-secret-mounting equivalent exists in `openshell sandbox create`
 
-**Blocks Task 4 of the Phase 0 spike** if that task needs the OpenClaw
-gateway actually running/serving the dashboard to test reachability —
-see Open question 6 and Data flow Boot step 3, both of which now point
-here. As of 2026-08-05 the sandbox cannot get past `csb/entrypoint.sh`'s
-`OPENCLAW_GATEWAY_TOKEN` check at all, so there is currently no
-dashboard traffic to test against; Task 4 will need either a workaround
-or to explicitly scope around this gap.
+**Worked around for Task 4 of the Phase 0 spike only — not solved.**
+Task 4 needed the OpenClaw gateway actually running/serving the dashboard
+to test `forward` vs. `service expose` reachability (Open question 6).
+Since there is still no secure way to supply `OPENCLAW_GATEWAY_TOKEN`
+(see below, unchanged since Task 3), Task 4 generated a random,
+throwaway token value (`openssl rand -hex 24`) used once for a single
+disposable sandbox and never persisted as a Podman secret or reused
+elsewhere, and passed it via `--env OPENCLAW_GATEWAY_TOKEN=<value>`. This
+is explicitly a different risk class from the "never pass raw secrets via
+`--credential KEY=VALUE`" constraint elsewhere in this doc, which protects
+real, reused credentials (API keys) from broad host/argv exposure — it is
+not a template for how the bootstrap script should handle the real
+gateway token in production. With the token supplied this way, the
+gateway reached `[gateway] ready` and served `200 OK` on `18789`
+(evidence in Open question 6). The secure-mounting gap itself remains
+exactly as described below, still flagged for the follow-up
+implementation plan.
 
 CSB's own `read_secret()` (Finding G) reads `/run/secrets/<name>` for
 keys it doesn't route through an OpenShell provider — notably
