@@ -254,7 +254,90 @@ template), which is untested here.
 **service-gator can likely be retired** in favor of OpenShell providers,
 at least for GitHub and GitLab (both built-in types); Forgejo/Jira via
 `generic` providers still needs a hands-on check before committing to
-dropping service-gator entirely.
+dropping service-gator entirely. **Forgejo was hands-on verified in
+Phase 0 Task 5 — see Finding J below.**
+
+### Finding J — hands-on validation that `generic` providers can reach a real, plain-HTTP Forgejo instance, but only after non-obvious manual policy authoring
+
+Phase 0 Task 5 (2026-08-05, VM at `192.168.64.2`, OpenShell 0.0.92) tested
+the `generic` provider type against a real self-hosted Forgejo instance
+(`http://rhel01.internal:3000/` — plain HTTP, no TLS, an internal homelab
+host) using a read-write-scoped repository/issues token. **Verdict:
+confirmed working end to end, but `generic` needs materially more manual
+setup than `github`/`gitlab`, and one step is easy to get wrong silently.**
+
+- **The brief's guessed `--endpoint` flag does not exist.** `openshell
+  provider create --type generic --help` exposes no endpoint/policy flag
+  at all — only `--credential`, `--config KEY=VALUE`, `--from-existing`,
+  `--from-gcloud-adc`, `--runtime-credentials`. `--config endpoint=...`
+  is silently accepted and stored under "Config keys" but is **not**
+  interpreted as network policy — it's an inert trap, not a working
+  substitute.
+- **Endpoint/network policy for a custom service is a wholly separate
+  mechanism from `provider create`.** Two working paths were found by
+  reading `openshell provider profile export github` as a schema
+  reference:
+  1. Author a full custom provider profile YAML (`credentials` +
+     `endpoints`, each endpoint needing `host`/`port`/`protocol`/
+     `enforcement` and either `access` *or* `rules` — the two are
+     mutually exclusive, confirmed via `provider profile lint`), import
+     it with `provider profile import --file`, then `provider create
+     --type <profile-id>`. Editing an existing custom profile requires
+     `provider profile update` with the profile's current
+     `resource_version` (from `provider profile export`) — updates are
+     optimistic-concurrency-checked, not free-form overwrites.
+  2. Skip profiles entirely and live-patch the policy already attached to
+     a running sandbox: `openshell policy update <sandbox> --add-endpoint
+     host:port:access:protocol:enforcement [--add-allow
+     host:port:METHOD:path_glob] --wait`.
+- **The actual blocker, and the main finding: an endpoint rule with no
+  explicit `binaries` allowlist silently denies every caller.** A rule
+  with `host`/`port`/`rules` (or `access: read-only`) exactly matching
+  the request still returned `{"error":"policy_denied"}` from OpenShell's
+  own proxy — not Forgejo — across three separate policy revisions
+  (`openshell policy get <sandbox>` reported each one `Loaded`/
+  `Effective`, and the rule's content, inspected via `policy update
+  --dry-run`, looked correct). The built-in `github_api`/`openai_api`
+  baseline-policy entries that ship with every sandbox both carry a
+  `binaries: [path: /usr/bin/curl]`-style entry that custom rules don't
+  get by default. Adding `--binary /usr/bin/curl` to the same
+  `--add-endpoint` call immediately fixed it — the exact same request
+  that had 403'd three times in a row returned Forgejo's real homepage
+  HTML on the next try. **This is the one step Finding I's GitHub test
+  never had to discover, because the built-in `github` profile already
+  ships a `binaries` entry — `generic` does not, for anything.**
+- **Once the `binaries` gap was fixed, the full mechanism matched Finding
+  I's GitHub result:**
+  - Placeholder substitution confirmed: `sh -c 'echo $FORGEJO_TOKEN'`
+    inside the sandbox showed only
+    `openshell:resolve:env:v15149966231025703563_FORGEJO_TOKEN`, never
+    the real token.
+  - A real authenticated call —
+    `curl -H "Authorization: token $FORGEJO_TOKEN"
+    http://rhel01.internal:3000/api/v1/repos/search` — returned a real
+    `200` with the token owner's actual repository data, proving the L7
+    proxy resolved the placeholder and forwarded a working credential to
+    a plain-HTTP (non-TLS) backend, not just HTTPS ones.
+  - **Defense in depth confirmed again, independently**: an earlier call
+    to `/api/v1/user` (needs Forgejo's `read:user` token scope, which
+    this read-write-on-repositories-and-issues token doesn't have) got a
+    real `403` from Forgejo itself
+    (`"token does not have at least one of required scope(s):
+    [read:user]"`) — the same two-independent-layers pattern as Finding
+    I's GitHub PAT-scope result, now confirmed on a second provider type.
+  - **Not resolved**: raw-IP-literal policy entries (tried against both
+    the Forgejo host's private IP and a public control IP, `1.1.1.1`,
+    each with an otherwise-correct rule) still 403'd under the
+    pre-`binaries`-fix rule shape and were not retried afterward with
+    `binaries` added. Hostname-based entries are the proven, recommended
+    path regardless, so this is a minor open sub-question, not a
+    blocker.
+- **Jira was explicitly not tested** — no test Jira instance or token was
+  available in this environment. This is a gap, not a "confirmed
+  working" result; do not extrapolate the Forgejo result onto Jira
+  without repeating this same hands-on check against a real Jira
+  instance/token before committing to dropping service-gator for Jira
+  specifically.
 
 ## The design
 
@@ -267,7 +350,7 @@ dropping service-gator entirely.
 | **A new tank-os boot-time bootstrap script** | A non-interactive port of what `scripts/openclaw-csb create` does interactively: registers OpenShell providers from tank-os's existing Podman-secret store (see `docs/provisioning.md`'s Podman Secrets section, including the host-SSH-pipe method added earlier in this effort), creates the CSB sandbox fresh on every boot (mirroring tank-os's existing recreate-on-boot pattern for its current tool-call sandbox — no dependency on OpenShell's `StartupResume`), and starts the dashboard forward bound to the VM guest's own loopback `18789` (Finding E). | `bootstrap-openshell-sandbox`, most of `sync-podman-secrets`, and the `openclaw.container` Quadlet's direct image reference. |
 | **A rewritten Quadlet/systemd unit** | Runs the bootstrap script's sandbox-create invocation with the gateway command in the foreground (not backgrounded via `nohup`, unlike the reference scripts in Finding C), so systemd's `Restart=on-failure` supervises the real process, not a detached child. | `openclaw.container`. |
 | **Podman secrets for whatever CSB itself doesn't route through a provider** (gateway token, and any model keys CSB handles via `read_secret()` rather than a provider) | Matches CSB's own current mixed state (Finding G) — tank-os doesn't need to be purer than CSB is today. | `sync-podman-secrets`'s existing env-injection Quadlet drop-in generation, narrowed in scope. |
-| **service-gator** | Likely retired. CSB doesn't reference it at all, and Finding I is hands-on-verified evidence that OpenShell's `github`/`gitlab` providers (plus `generic` for anything else) cover the same scoped-credential need natively, with tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split. Confirm Forgejo/Jira via `generic` providers before fully committing. | Likely fully removed; see Finding I / Open Question 2. |
+| **service-gator** | Retire for GitHub/GitLab and Forgejo — CSB doesn't reference it at all, and Findings I/J are hands-on-verified evidence that OpenShell's `github`/`gitlab` providers, and a hand-authored `generic` provider for Forgejo, cover the same scoped-credential need natively (tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split, though `generic` needs materially more manual policy setup). Keep it (or verify Jira the same way first) for Jira, which remains untested. | Removed for GitHub/GitLab/Forgejo; kept pending for Jira. See Finding I / Finding J / Open Question 2. |
 
 ### Data flow
 
@@ -402,12 +485,27 @@ port (Finding E).
      default `podman pull` resolution) — behavior was not separately
      verified on `amd64`, though the multi-arch manifest and Containerfile
      show no arch-conditional plugin logic.
-2. **service-gator's fate** — Finding I makes retirement the likely
-   answer for GitHub/GitLab (hands-on verified for GitHub specifically).
-   Remaining work: verify Forgejo/Jira via `generic` providers the same
-   way, then decide whether to drop service-gator entirely in this first
-   iteration or keep it only for whatever `generic`-provider testing
-   doesn't cover.
+2. **service-gator's fate — resolved for GitHub and Forgejo, still open
+   for Jira.** **Verified 2026-08-05 (Phase 0, Task 5 — Finding J).**
+   **Recommendation: retire service-gator for GitHub/GitLab and Forgejo;
+   keep it (or plan a dedicated verification pass) for Jira until that's
+   hands-on tested the same way.**
+   - **GitHub**: confirmed working via the built-in `github` provider
+     type (Finding I).
+   - **Forgejo**: confirmed working via the `generic` provider type
+     against a real, plain-HTTP homelab instance — but only after
+     hand-authoring an endpoint policy (no CLI flag on `provider create`
+     covers this for `generic`) and discovering that a `binaries`
+     allowlist is mandatory per rule or the request is silently denied.
+     See Finding J for the full sequence and the exact gap. This is
+     meaningfully more setup than GitHub/GitLab get for free, and the
+     implementation plan should budget for it (most likely by scripting
+     a reusable custom provider-profile YAML per non-built-in service,
+     rather than re-deriving the policy by hand each time).
+   - **Jira**: **still untested** — no test Jira instance or token was
+     available during this spike. Do not treat Jira as covered by the
+     Forgejo result; it needs its own hands-on pass (a test instance/API
+     token) before service-gator is dropped for Jira specifically.
 3. **Which existing tank-os docs still apply unchanged** (e.g.
    `docs/model-providers.md`'s full provider list,
    `docs/openshift-virtualization.md`'s per-VM deployment model) versus
