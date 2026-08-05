@@ -281,11 +281,18 @@ dropping service-gator entirely.
    `sync-podman-secrets`-style "only wire up what's present" pattern).
 3. The bootstrap unit creates the CSB sandbox fresh (`openshell sandbox
    create --from quay.io/redhat-et/openclaw:csb-<tag> --provider ... --
-   /app/entrypoint.sh` — the trailing `-- /app/entrypoint.sh` is
-   required; see Future consideration 6, verified 2026-08-05, Phase 0
-   Task 3 — without it the sandbox comes up idle instead of running
-   CSB's entrypoint/gateway), destroying/recreating rather than
-   attempting to resume a stopped one.
+   /app/entrypoint.sh`), destroying/recreating rather than attempting to
+   resume a stopped one. Two verified caveats on this exact command,
+   both from Phase 0 Task 3 (2026-08-05):
+   - The trailing `-- /app/entrypoint.sh` is required. Without it, the
+     sandbox comes up idle instead of running CSB's entrypoint/gateway
+     at all — see Future consideration 6.
+   - **Even with that trailing arg, this step does not yet finish
+     successfully as written.** CSB's entrypoint immediately fails with
+     `OPENCLAW_GATEWAY_TOKEN is required on every startup`, and
+     `openshell sandbox create` has no secure way to supply it today —
+     see Future consideration 5, which blocks this step (and Task 4's
+     dashboard-reachability check) until resolved.
 4. The unit starts (or the sandbox's own entrypoint starts) the dashboard
    forward bound to the guest's loopback `18789`.
 5. `openclaw gateway` runs in the foreground as the supervised process;
@@ -421,7 +428,12 @@ port (Finding E).
    is a generic TCP tunnel closer to tank-os's current mechanism;
    `service expose`'s hostname-based routing is a single-command flow but
    has no documented websocket/secure-context guarantees. Needs a hands-on
-   comparison, not just documentation reading.
+   comparison, not just documentation reading. **Blocked on Future
+   consideration 5** if the comparison requires the actual OpenClaw
+   gateway/dashboard to be serving traffic inside the sandbox — as of
+   2026-08-05 (Phase 0 Task 3) the gateway cannot start at all without
+   first resolving the `OPENCLAW_GATEWAY_TOKEN`/secret-mounting gap
+   described there.
 7. **Provider lifecycle across reboots.** **Verified 2026-08-05** (Phase
    0, Task 3 — hands-on against `openshell` 0.0.92 on the Task 2 VM,
    `openai`-type provider, real create/update/removal round-trips). The
@@ -466,9 +478,12 @@ port (Finding E).
 
 ## Future considerations (not blocking, keep in mind while designing)
 
-Raised after the design above was agreed; none of these need to be
+Raised after the design above was agreed; most of these don't need to be
 resolved before the first implementation spike, but they should shape how
-that spike and later phases are built.
+that spike and later phases are built. **Exception: item 5 below does
+block Task 4 of the Phase 0 validation spike** if that task needs the
+OpenClaw gateway actually serving the dashboard rather than just an idle
+sandbox — see item 5 for details.
 
 ### 1. The exact path from a host credential to an OpenShell provider needs testing
 
@@ -532,6 +547,14 @@ CSB-in-a-sandboxed-VM experience there as on a laptop, but this is
 correctly a later phase, not part of the first implementation.
 
 ### 5. No Podman-secret-mounting equivalent exists in `openshell sandbox create`
+
+**Blocks Task 4 of the Phase 0 spike** if that task needs the OpenClaw
+gateway actually running/serving the dashboard to test reachability —
+see Open question 6 and Data flow Boot step 3, both of which now point
+here. As of 2026-08-05 the sandbox cannot get past `csb/entrypoint.sh`'s
+`OPENCLAW_GATEWAY_TOKEN` check at all, so there is currently no
+dashboard traffic to test against; Task 4 will need either a workaround
+or to explicitly scope around this gap.
 
 CSB's own `read_secret()` (Finding G) reads `/run/secrets/<name>` for
 keys it doesn't route through an OpenShell provider — notably
