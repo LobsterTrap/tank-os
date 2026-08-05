@@ -603,18 +603,60 @@ git rm bootc/rootfs/usr/libexec/tank-os/bootstrap-openshell-sandbox
 git rm bootc/rootfs/usr/libexec/tank-os/bootstrap-openclaw
 ```
 
-- [ ] **Step 3: Remove the derived-image Makefile targets**
+- [ ] **Step 3: Remove the derived-image Makefile targets and variables**
+
+`Makefile`'s top-of-file variable block (lines 1-25 as of this plan's
+writing) currently declares, in order: `IMAGE_REGISTRY`, `IMAGE_NAMESPACE`,
+`IMAGE`, `FEDORA_BOOTC_BASE`, `OPENCLAW_REF ?= 2026.7.1` (line 8),
+`OPENSHELL_VERSION ?= 0.0.92` (line 13, with a comment above it saying
+it's "a single point of control for both Containerfiles that
+install/download OpenShell" — that comment becomes wrong once
+`bootc/openclaw-openshell/` is deleted, since only `bootc/Containerfile`
+installs OpenShell afterward), then `IMAGE_OPENCLAW_OPENSHELL_URI` (line
+19, with its own explanatory comment on lines 15-18), then
+`IMAGE_CONTAINERDISK_URI`.
+
+Replace lines 8 and 15-19 (the `OPENCLAW_REF` declaration and the
+`IMAGE_OPENCLAW_OPENSHELL_URI` declaration plus its comment) with:
+
+```makefile
+# Pinned, date-stamped CSB tag -- see
+# docs/dev/csb-bootc-deployment-design.md Open Question 1. CSB rebuilds
+# daily; do not default this to a moving tag like csb-latest.
+CSB_IMAGE_TAG ?= quay.io/redhat-et/openclaw:csb-2026.07.21
+```
+
+Update the `OPENSHELL_VERSION` comment (lines 9-12) to drop the
+"for both Containerfiles" framing — it now only describes
+`bootc/Containerfile`'s own RPM install:
+
+```makefile
+# Single point of control for the OpenShell RPMs bootc/Containerfile
+# installs on the host -- its own ARG default exists only for standalone
+# builds run without this Makefile, and must be bumped together with
+# this value.
+```
+
+In `BUILD_ARGS` (currently three lines: `--build-arg
+OPENCLAW_REF=$(OPENCLAW_REF)`, `--build-arg
+OPENCLAW_OPENSHELL_IMAGE=$(IMAGE_OPENCLAW_OPENSHELL_URI):$(OPENCLAW_REF)`,
+`--build-arg OPENSHELL_VERSION=$(OPENSHELL_VERSION)`), replace the first
+two lines with `--build-arg CSB_IMAGE_TAG=$(CSB_IMAGE_TAG)`, keeping the
+`OPENSHELL_VERSION` line unchanged.
 
 Delete the `build-openclaw-openshell` and `push-openclaw-openshell`
-targets (and their `.PHONY` lines) from `Makefile`, the corresponding
-`help` lines (`build-openclaw-openshell  Build the derived...`,
-`push-openclaw-openshell   Push it...`), and the `IMAGE_OPENCLAW_OPENSHELL_URI`
-variable and its `help` echo line. Update `build`'s own guard clause
-(the one warning "openclaw.container references this image by tag") to
-reference `CSB_IMAGE_TAG` instead, or drop the guard entirely since CSB's
-image is pulled at runtime by `openshell sandbox create`, not baked into
-a Quadlet's `Image=` line the way the old derived image was — there's
-nothing left for `podman build` to warn about missing.
+targets (and their `.PHONY` lines), their `help` lines
+(`build-openclaw-openshell  Build the derived...`,
+`push-openclaw-openshell   Push it...`), and their two `help`
+config-echo lines (`IMAGE_OPENCLAW_OPENSHELL_URI: ...` and
+`OPENCLAW_REF: ...`) — replace those two echo lines with one:
+`@echo "  CSB_IMAGE_TAG:   $(CSB_IMAGE_TAG)"`.
+
+Drop `build`'s own guard clause entirely (the one warning "openclaw.container
+references this image by tag... not found in local Podman storage") —
+CSB's image is pulled at runtime by `openshell sandbox create`, not baked
+into a Quadlet's `Image=` line the way the old derived image was, so
+there's nothing left for `podman build` to warn about missing.
 
 - [ ] **Step 4: Build the image locally**
 
