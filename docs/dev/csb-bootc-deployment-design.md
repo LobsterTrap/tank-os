@@ -467,16 +467,13 @@ this exact combination (only `test-openai` was used) — the provider
 *type* shouldn't matter to this mechanism, but that's an assumption, not
 a re-run test.
 
-**Not yet re-verified:** whether `--upload`'s stated `.gitignore`
+**Still not re-verified:** whether `--upload`'s stated `.gitignore`
 filtering (per `--help`) affects single-file uploads (it appears
 scoped to directory uploads, but wasn't explicitly tested against a
-single file); whether this pattern still holds once combined with the
-OpenShell providers from Findings A/I/J on the same `sandbox create`
-invocation (tested here without `--provider` flags, for isolation); and
-whether multiple simultaneous `--upload`s work (see above). The tested
-command also included `--no-tty` (needed to capture the entrypoint's
-stdout for this investigation); this shouldn't affect a
-systemd-supervised production invocation but wasn't tested without it.
+single file). The tested command also included `--no-tty` (needed to
+capture the entrypoint's stdout for this investigation); this shouldn't
+affect a systemd-supervised production invocation but wasn't tested
+without it.
 
 ## The design
 
