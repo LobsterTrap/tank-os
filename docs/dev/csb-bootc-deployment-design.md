@@ -1,6 +1,23 @@
 # Design: tank-os as openclaw-csb's bootc/qcow2 deployment channel
 
-Status: approved direction, not yet implemented. Written to hand off to a
+Status: approved direction; Phase 0 validation spike complete, one
+blocker found. The core bet — CSB image + OpenShell sandbox + providers
+replacing tank-os's own OpenClaw/OpenShell integration — holds up
+hands-on: sandbox creation works (with the trailing-command caveat in
+Future consideration 6), provider create/update/removal semantics across
+reboots are now known (Open Question 7), the dashboard is reachable via
+`forward` (Open Question 6), and GitHub/Forgejo credential-scoping via
+providers works end to end, letting service-gator retire for those two
+(Open Question 2 / Findings I, J). **Not yet implementable as designed**:
+there is still no secure way to supply CSB's own required
+`OPENCLAW_GATEWAY_TOKEN` to `openshell sandbox create` (Future
+consideration 5) — Task 4 only got a real gateway running via a
+sanctioned throwaway-token workaround, not a solution, so this blocks
+writing the real bootstrap script until resolved (options noted in
+Future consideration 5 for the next session to evaluate). Two more
+follow-ups are known-remaining but non-blocking: GitLab is inferred, not
+independently hands-on verified, to behave like GitHub (Open Question
+2), and Jira is untested (Open Question 2). Written to hand off to a
 fresh session for implementation planning (`writing-plans` skill or
 equivalent) — this doc is meant to be self-contained enough that the next
 session doesn't need this conversation's history.
@@ -254,7 +271,92 @@ template), which is untested here.
 **service-gator can likely be retired** in favor of OpenShell providers,
 at least for GitHub and GitLab (both built-in types); Forgejo/Jira via
 `generic` providers still needs a hands-on check before committing to
-dropping service-gator entirely.
+dropping service-gator entirely. **Forgejo was hands-on verified in
+Phase 0 Task 5 — see Finding J below.**
+
+### Finding J — hands-on validation that `generic` providers can reach a real, plain-HTTP Forgejo instance, but only after non-obvious manual policy authoring
+
+Phase 0 Task 5 (2026-08-05, VM at `192.168.64.2`, OpenShell 0.0.92) tested
+the `generic` provider type against a real self-hosted Forgejo instance
+(`http://rhel01.internal:3000/` — plain HTTP, no TLS, an internal homelab
+host) using a read-write-scoped repository/issues token. **Verdict:
+confirmed working end to end via a hand-authored custom provider profile
+layered on top of the `generic` type — bare `--type generic` alone never
+worked. `generic` needs materially more manual setup than `github`/
+`gitlab`, and one step is easy to get wrong silently.**
+
+- **The brief's guessed `--endpoint` flag does not exist.** `openshell
+  provider create --type generic --help` exposes no endpoint/policy flag
+  at all — only `--credential`, `--config KEY=VALUE`, `--from-existing`,
+  `--from-gcloud-adc`, `--runtime-credentials`. `--config endpoint=...`
+  is silently accepted and stored under "Config keys" but is **not**
+  interpreted as network policy — it's an inert trap, not a working
+  substitute.
+- **Endpoint/network policy for a custom service is a wholly separate
+  mechanism from `provider create`.** Two working paths were found by
+  reading `openshell provider profile export github` as a schema
+  reference:
+  1. Author a full custom provider profile YAML (`credentials` +
+     `endpoints`, each endpoint needing `host`/`port`/`protocol`/
+     `enforcement` and either `access` *or* `rules` — the two are
+     mutually exclusive, confirmed via `provider profile lint`), import
+     it with `provider profile import --file`, then `provider create
+     --type <profile-id>`. Editing an existing custom profile requires
+     `provider profile update` with the profile's current
+     `resource_version` (from `provider profile export`) — updates are
+     optimistic-concurrency-checked, not free-form overwrites.
+  2. Skip profiles entirely and live-patch the policy already attached to
+     a running sandbox: `openshell policy update <sandbox> --add-endpoint
+     host:port:access:protocol:enforcement [--add-allow
+     host:port:METHOD:path_glob] --wait`.
+- **The actual blocker, and the main finding: an endpoint rule with no
+  explicit `binaries` allowlist silently denies every caller.** A rule
+  with `host`/`port`/`rules` (or `access: read-only`) exactly matching
+  the request still returned `{"error":"policy_denied"}` from OpenShell's
+  own proxy — not Forgejo — across three separate policy revisions
+  (`openshell policy get <sandbox>` reported each one `Loaded`/
+  `Effective`, and the rule's content, inspected via `policy update
+  --dry-run`, looked correct). The built-in `github_api`/`openai_api`
+  baseline-policy entries that ship with every sandbox both carry a
+  `binaries: [path: /usr/bin/curl]`-style entry that custom rules don't
+  get by default. Adding `--binary /usr/bin/curl` to the same
+  `--add-endpoint` call immediately fixed it — the exact same request
+  that had 403'd three times in a row returned Forgejo's real homepage
+  HTML on the next try. **This is the one step Finding I's GitHub test
+  never had to discover, because the built-in `github` profile already
+  ships a `binaries` entry — `generic` does not, for anything.**
+- **Once the `binaries` gap was fixed, the full mechanism matched Finding
+  I's GitHub result:**
+  - Placeholder substitution confirmed: `sh -c 'echo $FORGEJO_TOKEN'`
+    inside the sandbox showed only
+    `openshell:resolve:env:v15149966231025703563_FORGEJO_TOKEN`, never
+    the real token.
+  - A real authenticated call —
+    `curl -H "Authorization: token $FORGEJO_TOKEN"
+    http://rhel01.internal:3000/api/v1/repos/search` — returned a real
+    `200` with the token owner's actual repository data, proving the L7
+    proxy resolved the placeholder and forwarded a working credential to
+    a plain-HTTP (non-TLS) backend, not just HTTPS ones.
+  - **Defense in depth confirmed again, independently**: an earlier call
+    to `/api/v1/user` (needs Forgejo's `read:user` token scope, which
+    this read-write-on-repositories-and-issues token doesn't have) got a
+    real `403` from Forgejo itself
+    (`"token does not have at least one of required scope(s):
+    [read:user]"`) — the same two-independent-layers pattern as Finding
+    I's GitHub PAT-scope result, now confirmed on a second provider type.
+  - **Not resolved**: raw-IP-literal policy entries (tried against both
+    the Forgejo host's private IP and a public control IP, `1.1.1.1`,
+    each with an otherwise-correct rule) still 403'd under the
+    pre-`binaries`-fix rule shape and were not retried afterward with
+    `binaries` added. Hostname-based entries are the proven, recommended
+    path regardless, so this is a minor open sub-question, not a
+    blocker.
+- **Jira was explicitly not tested** — no test Jira instance or token was
+  available in this environment. This is a gap, not a "confirmed
+  working" result; do not extrapolate the Forgejo result onto Jira
+  without repeating this same hands-on check against a real Jira
+  instance/token before committing to dropping service-gator for Jira
+  specifically.
 
 ## The design
 
@@ -267,7 +369,7 @@ dropping service-gator entirely.
 | **A new tank-os boot-time bootstrap script** | A non-interactive port of what `scripts/openclaw-csb create` does interactively: registers OpenShell providers from tank-os's existing Podman-secret store (see `docs/provisioning.md`'s Podman Secrets section, including the host-SSH-pipe method added earlier in this effort), creates the CSB sandbox fresh on every boot (mirroring tank-os's existing recreate-on-boot pattern for its current tool-call sandbox — no dependency on OpenShell's `StartupResume`), and starts the dashboard forward bound to the VM guest's own loopback `18789` (Finding E). | `bootstrap-openshell-sandbox`, most of `sync-podman-secrets`, and the `openclaw.container` Quadlet's direct image reference. |
 | **A rewritten Quadlet/systemd unit** | Runs the bootstrap script's sandbox-create invocation with the gateway command in the foreground (not backgrounded via `nohup`, unlike the reference scripts in Finding C), so systemd's `Restart=on-failure` supervises the real process, not a detached child. | `openclaw.container`. |
 | **Podman secrets for whatever CSB itself doesn't route through a provider** (gateway token, and any model keys CSB handles via `read_secret()` rather than a provider) | Matches CSB's own current mixed state (Finding G) — tank-os doesn't need to be purer than CSB is today. | `sync-podman-secrets`'s existing env-injection Quadlet drop-in generation, narrowed in scope. |
-| **service-gator** | Likely retired. CSB doesn't reference it at all, and Finding I is hands-on-verified evidence that OpenShell's `github`/`gitlab` providers (plus `generic` for anything else) cover the same scoped-credential need natively, with tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split. Confirm Forgejo/Jira via `generic` providers before fully committing. | Likely fully removed; see Finding I / Open Question 2. |
+| **service-gator** | Retire for GitHub (confirmed, Finding I) and Forgejo (confirmed, Finding J). GitLab is *inferred* to behave the same as GitHub — same built-in provider type — but was never independently hands-on tested; treat it as likely-but-unverified, not confirmed. Keep it (or verify Jira the same way first) for Jira, which remains untested. Findings I/J give hands-on-verified evidence that OpenShell's `github` provider, and a hand-authored `generic` provider for Forgejo, cover the same scoped-credential need natively (tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split, though `generic` needs materially more manual policy setup). | Removed for GitHub/Forgejo; likely removable for GitLab pending independent verification; kept pending for Jira. See Finding I / Finding J / Open Question 2. |
 
 ### Data flow
 
@@ -280,8 +382,19 @@ dropping service-gator entirely.
    from whatever Podman secrets already exist (reusing the existing
    `sync-podman-secrets`-style "only wire up what's present" pattern).
 3. The bootstrap unit creates the CSB sandbox fresh (`openshell sandbox
-   create --from quay.io/redhat-et/openclaw:csb-<tag> --provider ...`),
-   destroying/recreating rather than attempting to resume a stopped one.
+   create --from quay.io/redhat-et/openclaw:csb-<tag> --provider ... --
+   /app/entrypoint.sh`), destroying/recreating rather than attempting to
+   resume a stopped one. Two verified caveats on this exact command,
+   both from Phase 0 Task 3 (2026-08-05):
+   - The trailing `-- /app/entrypoint.sh` is required. Without it, the
+     sandbox comes up idle instead of running CSB's entrypoint/gateway
+     at all — see Future consideration 6.
+   - **Even with that trailing arg, this step does not yet finish
+     successfully as written.** CSB's entrypoint immediately fails with
+     `OPENCLAW_GATEWAY_TOKEN is required on every startup`, and
+     `openshell sandbox create` has no secure way to supply it today —
+     see Future consideration 5, which blocks this step (and Task 4's
+     dashboard-reachability check) until resolved.
 4. The unit starts (or the sandbox's own entrypoint starts) the dashboard
    forward bound to the guest's loopback `18789`.
 5. `openclaw gateway` runs in the foreground as the supervised process;
@@ -316,13 +429,118 @@ port (Finding E).
    written) cover everything tank-os users currently rely on (OpenClaw version,
    plugin set, any tank-os-specific customizations like alternate sandbox
    tool images)? Needs direct verification — likely the first concrete
-   implementation step (see "Suggested first step" below).
-2. **service-gator's fate** — Finding I makes retirement the likely
-   answer for GitHub/GitLab (hands-on verified for GitHub specifically).
-   Remaining work: verify Forgejo/Jira via `generic` providers the same
-   way, then decide whether to drop service-gator entirely in this first
-   iteration or keep it only for whatever `generic`-provider testing
-   doesn't cover.
+   implementation step (see "Suggested first step" below). **Verified
+   2026-08-05** (Phase 0, Task 1 — findings below); re-check before
+   actual implementation since CSB rebuilds daily.
+
+   **2026-08-05 validation spike findings (Phase 0, Task 1):**
+   - **`CSB_IMAGE_TAG` to use going forward:
+     `quay.io/redhat-et/openclaw:csb-2026.07.21`.** Use this immutable,
+     date-stamped **tag** (a multi-arch manifest list — each host
+     resolves its own architecture automatically), not `csb-latest` —
+     CSB rebuilds on a daily schedule (see workflow's "Check upstream
+     version" job), so `csb-latest` pulled on a different day could
+     silently resolve to a different image than the one validated here.
+     **Do not substitute the digest recorded below for the tag on a
+     multi-arch host**: the digest
+     (`sha256:93e5610b1f2a920d37d4ed9c09495d0b86d827c279fcabceb0768082a686c2ad`)
+     is the `linux/arm64` manifest entry specifically (this spike ran on
+     Apple Silicon) — pinning to it on an `amd64` host would pull the
+     wrong architecture (or fail outright). The digest is recorded only
+     to make this spike's exact image reproducible on the same
+     architecture it was tested on; the tag is the value to use for
+     general-purpose pinning. This tag was *discovered* by resolving
+     `csb-latest` via a live `skopeo list-tags`/`skopeo inspect` against
+     `quay.io/redhat-et/openclaw` and `podman pull`, then reading off the
+     immutable tag it currently pointed to — `csb-latest` itself is not
+     the recommended value.
+   - **Tag scheme (confirmed against `redhat-et/openclaw-csb`'s
+     `.github/workflows/build.yml` and the live registry query above):**
+     the doc's placeholder `csb-<arch>-<date>` guess was close but the
+     date segment is zero-padded (`csb-amd64-2026.07.21`, not
+     `csb-amd64-2026.7.21`). Multi-arch manifest-list tags drop the arch
+     segment entirely (`csb-2026.07.21`, `csb-latest`,
+     `csb-git-<short-sha>`, `csb-openclaw-<openclaw-version>`).
+   - **Version comparison:** the pulled image reports
+     `OpenClaw 2026.7.1 (2d2ddc4)` via `openclaw --version`, and the
+     `org.opencontainers.image.version` label is `v2026.7.1` — matching
+     tank-os's current pin (`ARG OPENCLAW_REF=2026.7.1` in
+     `bootc/openclaw-openshell/Containerfile`) exactly. No version gap
+     today; this will drift again as CSB's scheduled build tracks
+     upstream releases (see workflow's daily "Check upstream version"
+     job), so re-verify at actual implementation time.
+   - **Plugin-set comparison:** the CSB image bundles 97 extensions
+     under `/app/dist/extensions` (OpenClaw's standard providers/tools —
+     `openai`, `anthropic`, `google`, `github-copilot`, `browser`,
+     `canvas`, etc.), but **no `openshell` extension is bundled**.
+     `openshell-sandbox` appears only inside
+     `official-external-plugin-catalog-*.js` (OpenClaw's catalog of
+     installable-but-not-bundled external plugins), consistent with
+     Finding I / the OpenShell-providers-replace-service-gator evidence
+     already in this doc.
+   - **CSB force-disables all plugins by default ("naked claw"
+     policy) — action item for Tasks 3/4.** The CSB entrypoint
+     (`csb/entrypoint.sh` → `csb/configure-openclaw.mjs`) unconditionally
+     sets `plugins.enabled = false` with empty `allow`/`deny` lists on
+     *every* startup, regardless of what's bundled or previously
+     configured — the config is rewritten fresh each run and CSB's
+     policy is always restored. This is a bigger behavioral difference
+     from tank-os's current setup than the plugin-inventory gap above:
+     even after installing `openshell-sandbox` from the catalog, it will
+     stay inert unless whoever implements sandbox creation also plumbs
+     an explicit allowlist through (`plugins.allow` and/or
+     `OPENCLAW_ALLOWED_SKILLS`/`agents.defaults.skills`). Whichever task
+     stands up the CSB sandbox with OpenShell providers (Task 3 or 4)
+     needs to account for this or the sandbox will silently come up with
+     no tools enabled.
+   - **SSH client / `openshell` CLI bundling (Finding H redundancy
+     check):** `command -v ssh` succeeds (`/usr/bin/ssh`, pulled in
+     transitively by the RHEL AI base image, not installed explicitly)
+     but `command -v openshell` fails (exit 1) — the `openshell` CLI
+     binary is absent. **Verdict: only half redundant.** The SSH-client
+     half of `bootc/openclaw-openshell/`'s job is already covered by
+     CSB's base image; the `openshell` CLI install step still has to
+     happen somewhere. tank-os's derived-image build step can be
+     slimmed (drop the `openssh-client` install) but not dropped
+     entirely, unless the CLI is installed some other way (e.g. on the
+     VM host only, if the design ends up not needing it inside the
+     OpenClaw container).
+   - **Caveat:** `git clone` of `redhat-et/openclaw-csb` and the
+     `podman pull`/`skopeo` registry queries above all succeeded from
+     this sandbox, so these findings are directly observed, not
+     inferred. The pulled image was `linux/arm64` (this machine's
+     default `podman pull` resolution) — behavior was not separately
+     verified on `amd64`, though the multi-arch manifest and Containerfile
+     show no arch-conditional plugin logic.
+2. **service-gator's fate — resolved for GitHub and Forgejo, still open
+   for GitLab (inferred, not independently tested) and Jira (untested).**
+   **Verified 2026-08-05 (Phase 0, Task 5 — Finding J).**
+   **Recommendation: retire service-gator for GitHub (confirmed, Finding
+   I) and Forgejo (confirmed, Finding J); treat GitLab as likely covered
+   by the same built-in provider type as GitHub but not independently
+   hands-on tested — verify before dropping service-gator for GitLab
+   specifically; keep it (or plan a dedicated verification pass) for
+   Jira until that's hands-on tested the same way.**
+   - **GitHub**: confirmed working via the built-in `github` provider
+     type (Finding I).
+   - **GitLab**: **not independently tested**, in this task or Finding I.
+     It's *inferred* to behave like GitHub because it's also a built-in
+     provider type (per Finding A), but that inference has never been
+     hands-on verified — don't conflate "likely" with "confirmed" here.
+   - **Forgejo**: confirmed working via the `generic` provider type
+     against a real, plain-HTTP homelab instance — but only after
+     hand-authoring an endpoint policy (no CLI flag on `provider create`
+     covers this for `generic`) and discovering that a `binaries`
+     allowlist is mandatory per rule or the request is silently denied.
+     See Finding J for the full sequence and the exact gap. This is
+     meaningfully more setup than GitHub/GitLab get for free, and the
+     implementation plan should budget for it (most likely by scripting
+     a reusable custom provider-profile YAML per non-built-in service,
+     rather than re-deriving the policy by hand each time).
+   - **Jira**: **still untested** — no test Jira instance or token was
+     available during this spike. Do not treat Jira as covered by the
+     Forgejo result; it needs its own hands-on pass (a test instance/API
+     token) before service-gator is dropped for Jira specifically.
 3. **Which existing tank-os docs still apply unchanged** (e.g.
    `docs/model-providers.md`'s full provider list,
    `docs/openshift-virtualization.md`'s per-VM deployment model) versus
@@ -339,26 +557,131 @@ port (Finding E).
    pivot — both conversations were planned but not yet held as of this
    doc's writing.
 6. **Whether raw OpenShell `forward` or `service expose` is the better fit**
-   for binding the dashboard to the guest's loopback (Finding E) — `forward`
-   is a generic TCP tunnel closer to tank-os's current mechanism;
-   `service expose`'s hostname-based routing is a single-command flow but
-   has no documented websocket/secure-context guarantees. Needs a hands-on
-   comparison, not just documentation reading.
-7. **Provider lifecycle across reboots.** The Data flow's Boot step 3
-   (`openshell sandbox create ... destroying/recreating`) covers the
-   *sandbox's* lifecycle explicitly, but step 2's `ExecStartPre` provider
-   registration doesn't yet say what happens on the second and later
-   boots: stable provider names so re-registration is idempotent rather
-   than accumulating duplicates, get-or-create/update semantics when a
-   secret's value has changed since the last boot, and removal/detachment
-   of providers whose backing secret has disappeared. Needs a decision
-   before the bootstrap script is written, not just at review time.
+   for binding the dashboard to the guest's loopback (Finding E). **Resolved
+   2026-08-05 (Phase 0, Task 4) — recommendation: use `forward`.**
+   Hands-on comparison against `openshell` 0.0.92 on the Task 2/3 VM, with
+   the CSB gateway actually running inside `csb-spike` (see Future
+   consideration 5 for how the `OPENCLAW_GATEWAY_TOKEN` blocker was worked
+   around for this test only):
+   - **`openshell forward start <port> <sandbox> --background`** is a
+     literal TCP tunnel: the host-side bind port and the sandbox-internal
+     target port must be the *same* number (confirmed empirically — a
+     mismatched pair, host `28789` against a sandbox process actually
+     listening on a different port, produced `curl: (52) Empty reply from
+     server`; a matched pair, `28791` on both sides, worked). Verified
+     end-to-end with a throwaway plain-HTTP listener inside `csb-spike`:
+     `ssh -L 28791:127.0.0.1:28791` from the laptop, through
+     `openshell forward`, into the sandbox's isolated network namespace,
+     returned a clean `HTTP/1.1 200 OK` with the expected body. No TLS
+     appears anywhere in this path — it's plain HTTP end to end (the outer
+     SSH tunnel is the only encryption layer, exactly matching tank-os's
+     existing documented dashboard-access pattern in `docs/cli.md`), so
+     there is no secure-context/certificate-warning concern for a browser
+     at all.
+   - **Websocket traffic was not separately tested end to end against the
+     real dashboard, and that's not a gap for either mechanism, for two
+     different reasons.** For `forward`: it's a raw TCP tunnel with no
+     protocol awareness (confirmed above — it moved a plain HTTP
+     request/response with zero involvement at the HTTP layer), so it is
+     protocol-transparent by construction; a websocket upgrade is just
+     more bytes on the same already-proven TCP path, independent of
+     whether this task separately drove one to completion. For
+     `service expose`: the question is moot, not passed — its TLS
+     handshake fails before any HTTP or websocket-upgrade negotiation
+     could even begin, so there is no protocol to characterize.
+   - **The literal dashboard port (18789) could not be tested directly on
+     this shared spike VM**: the VM's pre-existing baseline
+     `openclaw.service`/`openclaw` container (tank-os's *current*,
+     pre-CSB dashboard, `quay.io/redhat-et/tank-claw-openshell:2026.7.1`)
+     already binds `0.0.0.0:18789` directly via host networking, so
+     `openshell forward start 18789 csb-spike` fails with "Port 18789 is
+     already in use." This is an artifact of validating the old and new
+     models side by side on one VM, not a design flaw — Finding C's
+     ONE-sandbox model means the baseline service is retired when CSB
+     takes over, so this collision would not occur in the target
+     architecture. Stopping the baseline service to clear the port for
+     this test was considered and explicitly not done (out of scope for a
+     validation spike to disrupt a service it didn't create). Internally,
+     `curl http://127.0.0.1:18789/` from inside `csb-spike` itself
+     returned `200 OK`, confirming the real dashboard is alive and
+     healthy — only the external-forward hop on that exact port number was
+     untested, and the generic mechanism was proven working with a
+     different, non-colliding port on the same sandbox above.
+   - **`openshell service expose <sandbox> <port>`** does *not* bind a
+     host TCP port at all — it registers hostname-based routing through
+     OpenShell's own gateway control port (`17670`), returning a URL like
+     `https://default--csb-spike.openshell.localhost:17670/`. This
+     sidesteps the port-collision problem entirely, so it *was* tested
+     directly against the real dashboard target
+     (`127.0.0.1:18789` inside `csb-spike`). Result: the TLS handshake on
+     that URL requires a **client certificate** (`curl -k` against it
+     fails with `SSL routines::tlsv13 alert certificate required` after
+     the server explicitly sends `Request CERT`). There is no
+     `openshell` flag or subcommand to obtain or install a client
+     certificate for an ordinary browser, and no `--insecure`-equivalent
+     that disables server-side client-cert enforcement. **This is a harder
+     failure than Open Question 6 anticipated** — it isn't a missing
+     secure-context guarantee or a self-signed-cert warning a user could
+     click through; it's a TLS handshake a stock browser cannot complete
+     at all.
+   - **Recommendation for the follow-up implementation plan: use
+     `forward`.** It is a proven, working, plain-TCP mechanism (verified
+     end to end on a substitute non-colliding port inside `csb-spike`,
+     not literally re-run against port 18789 itself — see above for why)
+     that preserves the existing SSH-tunnel-then-browse UX unchanged. Do
+     not use `service expose` for the dashboard unless/until OpenShell
+     ships a supported way to provision browser-usable client
+     certificates for its hostname-routed URLs.
+7. **Provider lifecycle across reboots.** **Verified 2026-08-05** (Phase
+   0, Task 3 — hands-on against `openshell` 0.0.92 on the Task 2 VM,
+   `openai`-type provider, real create/update/removal round-trips). The
+   bootstrap script needs an explicit create-then-update pattern, not a
+   bare `create` call on every boot:
+   - **`openshell provider create --name <X> --from-existing` is not a
+     safe get-or-create.** Re-running it unchanged against an existing
+     name errors (`provider already exists`, exit 1) instead of
+     succeeding or duplicating — `provider list`'s row count correctly
+     stayed at 1, so it fails safely, but a bare `create` in
+     `ExecStartPre` would fail on every boot after the first.
+   - **`openshell provider update <name> --from-existing` is the
+     idempotent update path.** After rotating the backing Podman secret
+     and re-exporting it, `update --from-existing` bumped the provider's
+     `Resource version` from 1 to 2 and stored the new credential value.
+     The bootstrap script should do `create ... || update ...` (or check
+     existence via `provider get` first), not assume `create` alone is
+     idempotent.
+   - **Removing the backing Podman secret does not detach or invalidate
+     an already-created provider.** `openshell provider create`/`update`
+     copy the credential value into OpenShell's own store; it is not a
+     live reference to the Podman secret. After `podman secret rm
+     test_openai_key`, `openshell provider get test-openai` still
+     returned the provider with its last-synced credential, and a CSB
+     sandbox created afterward with `--provider test-openai` still
+     resolved through it. Re-*syncing* a provider once its secret is
+     gone (`update --from-existing`) does fail, but only because
+     `openshell` itself then reports "no existing local
+     credentials/config found" for the empty value it was handed — see
+     the bash caveat immediately below for why the *shell script*
+     doesn't fail earlier where you'd expect.
+   - **Caveat for whoever writes the bootstrap script, found while
+     testing the above:** `export VAR="$(podman secret inspect
+     --showsecret ...)"` under `set -euo pipefail` does **not** abort
+     the script if the inner command fails — `export` (like `local`/
+     `declare`) masks the command substitution's exit status, a known
+     bash gotcha. Hands-on repro: `export FOO="$(false)"` under `set
+     -euo pipefail` exits 0 with `FOO` empty. Don't rely on `set -e` to
+     catch a missing/removed secret at the `export` line; check the
+     `podman secret inspect` exit status explicitly first, e.g. `val="$(podman
+     secret inspect ...)" || exit 1` split from the `export`.
 
 ## Future considerations (not blocking, keep in mind while designing)
 
-Raised after the design above was agreed; none of these need to be
+Raised after the design above was agreed; most of these don't need to be
 resolved before the first implementation spike, but they should shape how
-that spike and later phases are built.
+that spike and later phases are built. **Exception: item 5 below does
+block Task 4 of the Phase 0 validation spike** if that task needs the
+OpenClaw gateway actually serving the dashboard rather than just an idle
+sandbox — see item 5 for details.
 
 ### 1. The exact path from a host credential to an OpenShell provider needs testing
 
@@ -420,6 +743,78 @@ unchanged on OpenShift Virtualization too — worth explicitly verifying
 once the core design is implemented, so users get the same
 CSB-in-a-sandboxed-VM experience there as on a laptop, but this is
 correctly a later phase, not part of the first implementation.
+
+### 5. No Podman-secret-mounting equivalent exists in `openshell sandbox create`
+
+**Worked around for Task 4 of the Phase 0 spike only — not solved.**
+Task 4 needed the OpenClaw gateway actually running/serving the dashboard
+to test `forward` vs. `service expose` reachability (Open question 6).
+Since there is still no secure way to supply `OPENCLAW_GATEWAY_TOKEN`
+(see below, unchanged since Task 3), Task 4 generated a random,
+throwaway token value (`openssl rand -hex 24`) used once for a single
+disposable sandbox and never persisted as a Podman secret or reused
+elsewhere, and passed it via `--env OPENCLAW_GATEWAY_TOKEN=<value>`. This
+is explicitly a different risk class from the "never pass raw secrets via
+`--credential KEY=VALUE`" constraint elsewhere in this doc, which protects
+real, reused credentials (API keys) from broad host/argv exposure — it is
+not a template for how the bootstrap script should handle the real
+gateway token in production. With the token supplied this way, the
+gateway reached `[gateway] ready` and served `200 OK` on `18789`
+(evidence in Open question 6). The secure-mounting gap itself remains
+exactly as described below, still flagged for the follow-up
+implementation plan.
+
+CSB's own `read_secret()` (Finding G) reads `/run/secrets/<name>` for
+keys it doesn't route through an OpenShell provider — notably
+`OPENCLAW_GATEWAY_TOKEN`, which `csb/entrypoint.sh` requires on *every*
+startup (fatal error otherwise), plus the anthropic/google/xai/mistral/
+cohere keys. **Verified 2026-08-05 (Phase 0, Task 3):** neither
+`openshell sandbox create --help` nor `openshell --help`'s full command
+list (`sandbox`, `service`, `forward`, `logs`, `policy`, `settings`,
+`provider`, `gateway`, `status`, `inference`, `doctor`, `term`,
+`completions`, `ssh-proxy`) has a `secret` subcommand or `--secret`
+flag. The one flag that injects arbitrary env vars, `--env
+<KEY=VALUE>`, only accepts the literal-value form — unlike
+`--credential`, it has no bare-`KEY` env-lookup form (confirmed:
+`--env SOME_KEY` alone errors with `--env expects KEY=VALUE, got
+'SOME_KEY'`), so using it for a real secret would put the raw value in
+the sandbox-create process's argv, exactly the exposure this doc's
+security constraint says to avoid. Hands-on confirmation of the actual
+failure mode this causes: creating `csb-spike` and explicitly invoking
+the image's real entrypoint (`-- /app/entrypoint.sh`, see item 6 below)
+produced `ERROR: OPENCLAW_GATEWAY_TOKEN is required on every startup.
+Provide it via -e or --secret openclaw-gateway-token.` — there is no
+secure, supported way to satisfy this today. **Flagging for the
+follow-up implementation plan, not solved here** per Task 3's scope;
+options to evaluate later include mounting a plaintext file via
+`--upload` before the entrypoint reads it (weaker than a real secret
+mount) or an upstream feature request to OpenShell for a native
+`--secret` flag.
+
+### 6. `openshell sandbox create` with no trailing command bypasses CSB's entrypoint entirely
+
+Finding G states CSB's `csb/entrypoint.sh` "execs `openclaw gateway
+--allow-unconfigured` in the foreground" inside the container.
+**Verified 2026-08-05 (Phase 0, Task 3) that this is only true if
+`sandbox create` is given an explicit trailing command that invokes
+it.** Run exactly as this doc's Data flow step 3 and Task 3's brief
+describe it (`openshell sandbox create --from $CSB_IMAGE_TAG --name
+csb-spike --provider test-openai`, no `--` command), the sandbox
+reaches `Ready`/`healthy` — but `podman top` on the resulting container
+shows only OpenShell's own supervisor
+(`/opt/openshell/bin/openshell-sandbox`) plus a keep-alive `sleep
+infinity` and an interactive `bash -i`. The image's actual
+`ENTRYPOINT` (`/app/entrypoint.sh`, confirmed via `podman inspect` on
+the image itself) never runs, so the OpenClaw gateway never starts.
+`sandbox create --help` explains why: with no `[COMMAND]...` after
+`--`, it "defaults to an interactive shell," silently overriding the
+image's baked-in entrypoint rather than composing with it. Re-running
+with an explicit `-- /app/entrypoint.sh` does invoke the real
+entrypoint (and immediately surfaces item 5's gateway-token gap).
+**Action item for the bootstrap script:** `sandbox create` must end
+with `-- /app/entrypoint.sh` (or equivalent) to actually run CSB's
+startup logic — the bare form in this doc's current Data flow step 3
+only produces an idle shell container.
 
 ## Suggested first implementation step
 
