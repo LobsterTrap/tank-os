@@ -22,7 +22,7 @@ ARG CSB_IMAGE_TAG=quay.io/redhat-et/openclaw:csb-2026.07.21
 
 # OpenShell CLI + gateway RPMs, pinned to a tagged release rather than
 # `latest` for reproducible builds.
-ARG OPENSHELL_VERSION=0.0.92
+ARG OPENSHELL_VERSION=0.0.99
 
 RUN set -eux; \
     dnf -y install \

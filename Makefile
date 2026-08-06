@@ -13,7 +13,7 @@ CSB_IMAGE_TAG ?= quay.io/redhat-et/openclaw:csb-2026.07.21
 # installs on the host -- its own ARG default exists only for standalone
 # builds run without this Makefile, and must be bumped together with
 # this value.
-OPENSHELL_VERSION ?= 0.0.92
+OPENSHELL_VERSION ?= 0.0.99
 
 # KubeVirt containerDisk (wraps out-tank-os/qcow2/disk.qcow2, see
 # deploy/containerdisk/Containerfile) -- override if you're publishing to
