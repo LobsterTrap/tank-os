@@ -7,20 +7,23 @@ set -euo pipefail
 # systemd --user unit, not a Podman Quadlet -- CSB's own image is run via
 # `openshell sandbox create`, not `podman run` directly).
 #
-# Four jobs, all idempotent except the sandbox itself (recreated fresh on
+# Five jobs, all idempotent except the sandbox itself (recreated fresh on
 # every start -- Open Question 7's "no dependency on StartupResume"):
-#   1. Auto-provision the gateway token as a Podman secret on first boot,
+#   1. Register the local gateway with the CLI, if it isn't already --
+#      required once per boot before any other `openshell` command below can
+#      succeed (see step 1's comment for why this is needed at all).
+#   2. Auto-provision the gateway token as a Podman secret on first boot,
 #      mirroring bootstrap-openclaw's old self-service UX.
-#   2. Register/update OpenShell providers for whichever of CSB's
+#   3. Register/update OpenShell providers for whichever of CSB's
 #      provider-routed credentials (openai, github) tank-os has a secret
 #      for (Finding I).
-#   3. Stage whichever of CSB's read_secret()-routed keys (Finding G/K)
+#   4. Stage whichever of CSB's read_secret()-routed keys (Finding G/K)
 #      tank-os has a secret for, via --upload + a shell-wrapper trailing
 #      command -- never via --env/--credential with a literal value.
-#   4. Delete any sandbox left over from a prior start, then run
+#   5. Delete any sandbox left over from a prior start, then run
 #      `openshell sandbox create` in the background and poll until the
 #      sandbox reports Ready (Finding L: the CLI's foreground attachment is
-#      cosmetic, not the supervised workload -- see step 5 below).
+#      cosmetic, not the supervised workload -- see step 7 below).
 
 csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
 sandbox_name="tank-csb"
@@ -30,21 +33,48 @@ secret_exists() {
   podman secret inspect "$1" >/dev/null 2>&1
 }
 
-# --- 0. Wipe any staged-secret leftovers from a prior run -------------------
+# --- 1. Register the local gateway with the CLI ----------------------------
+#
+# openshell-gateway.service generates a self-signed mTLS client bundle at
+# ~/.config/openshell/gateways/openshell/mtls/ on its own first start (its
+# ExecStartPre runs `openshell-gateway generate-certs`), but nothing
+# registers that bundle with the CLI -- per OpenShell's own
+# /usr/share/doc/openshell-gateway/QUICKSTART.md ("Register the gateway with
+# the CLI"), that is a separate, explicit `openshell gateway add` step.
+# Without it every `openshell` command below fails immediately with "No
+# active gateway", silently (the sandbox-create call two steps down redirects
+# to /dev/null), and this script's poll loop spins for the full 600s waiting
+# on a Ready state nothing can ever produce.
+#
+# `openshell status` always exits 0 -- even when unconfigured, it just
+# prints "No gateway configured." -- so it can't be used as a guard here.
+# `openshell gateway add` itself isn't idempotent either: run a second time
+# it exits 1 with "Gateway 'openshell' already exists." That's the one
+# expected failure on every boot after the first, so treat it (and only it)
+# as success; any other failure means registration is genuinely broken and
+# should stop the script rather than let it silently spin for 600s again.
+if ! add_output="$(openshell gateway add --local https://127.0.0.1:17670 2>&1)"; then
+  if ! grep -q "already exists" <<<"$add_output"; then
+    echo "bootstrap-csb-sandbox: gateway registration failed: $add_output" >&2
+    exit 1
+  fi
+fi
+
+# --- 2. Wipe any staged-secret leftovers from a prior run -------------------
 #
 # upload_dir is a FIXED, well-known path (tmpfs-backed, never touches
 # persistent disk) rather than a mktemp -d location. This is deliberate: step
-# 5 below backgrounds `openshell sandbox create` and this script exits (after
+# 7 below backgrounds `openshell sandbox create` and this script exits (after
 # polling for Ready) while that backgrounded process is still running --
 # there is no point at which this script could safely `rm` the upload
 # directory itself, because `openshell` (the thing that actually reads the
 # files via --upload) may still be reading them asynchronously after this
-# script has exited (see step 5's comment for why it can't `exec` into
+# script has exited (see step 7's comment for why it can't `exec` into
 # `create` and let that be the cleanup boundary instead). So cleanup cannot
 # happen at the *end* of a successful run; instead, every run wipes and
 # recreates this fixed directory at the *start*, before staging any new
 # secrets into it. This mirrors the same "delete-then-create fresh every
-# start" philosophy step 4 already applies to the sandbox itself. Exposure is
+# start" philosophy step 6 already applies to the sandbox itself. Exposure is
 # bounded to "the currently-running instance's files, for as long as that
 # instance is alive" rather than "accumulating leftover directories
 # forever."
@@ -61,13 +91,13 @@ read_secret_value() {
   printf '%s' "$value"
 }
 
-# --- 1. Auto-provision the gateway token -----------------------------------
+# --- 3. Auto-provision the gateway token -----------------------------------
 
 if ! secret_exists openclaw_gateway_token; then
   openssl rand -hex 32 | podman secret create openclaw_gateway_token -
 fi
 
-# --- 2. Provider registration (Finding I, Open Question 7) -----------------
+# --- 4. Provider registration (Finding I, Open Question 7) -----------------
 
 register_provider() {
   local name="$1" type="$2" env_var="$3" secret_name="$4" secval
@@ -89,7 +119,7 @@ provider_args=()
 openshell provider get openai-claw >/dev/null 2>&1 && provider_args+=(--provider openai-claw)
 openshell provider get github-claw >/dev/null 2>&1 && provider_args+=(--provider github-claw)
 
-# --- 3. Stage non-provider-routed secrets for --upload (Finding K) ---------
+# --- 5. Stage non-provider-routed secrets for --upload (Finding K) ---------
 
 upload_args=()
 wrapper_lines=()
@@ -122,7 +152,7 @@ stage_secret cohere_api_key  COHERE_API_KEY  optional
 
 wrapper="$(printf '%s ' "${wrapper_lines[@]}")exec /app/entrypoint.sh"
 
-# --- 4. Recreate the sandbox fresh every start, then exec into it ----------
+# --- 6. Recreate the sandbox fresh every start, then exec into it ----------
 
 openshell sandbox delete "$sandbox_name" >/dev/null 2>&1 || true
 
@@ -140,10 +170,10 @@ done
 # upload_dir is intentionally NOT removed here. The `create` below runs in
 # the background and this script exits while it's still starting up, so no
 # bash code here can run "after openshell has read the files" -- the
-# wipe-and-recreate at the top of the script (step 0) is what cleans up, on
+# wipe-and-recreate at the top of the script (step 2) is what cleans up, on
 # the *next* run, before that run stages its own fresh secrets.
 
-# --- 5. Create in the background, then poll for Ready (Finding L) ----------
+# --- 7. Create in the background, then poll for Ready (Finding L) ----------
 #
 # Finding L: killing the `openshell sandbox create` CLI process does not
 # tear down the sandbox -- the CLI's foreground attachment is cosmetic (a
