@@ -15,20 +15,13 @@ ARG OPENCLAW_GID=1000
 ARG OPENCLAW_SUBID_START=100000
 ARG OPENCLAW_SUBID_COUNT=65536
 
-# Pinned to a tagged release, not `main`/`latest` -- see
-# claw-tank-hummingbird/verification-findings.md item 4 for why this
-# specific version (fixes CVE-2026-27002 and the related sandbox
-# bind-mount escape chain; 2026.7.2 exists but is still beta).
-ARG OPENCLAW_REF=2026.7.1
+# Pinned, date-stamped CSB tag -- see
+# docs/dev/csb-bootc-deployment-design.md Open Question 1. CSB rebuilds
+# daily; do not use csb-latest here.
+ARG CSB_IMAGE_TAG=quay.io/redhat-et/openclaw:csb-2026.07.21
 
-# The OpenClaw container image, with the openshell CLI and an SSH client
-# layered on top (see bootc/openclaw-openshell/Containerfile). Published to
-# quay.io/redhat-et/tank-claw-openshell via `make build-openclaw-openshell
-# push-openclaw-openshell` (build/push that BEFORE building this image).
-ARG OPENCLAW_OPENSHELL_IMAGE=quay.io/redhat-et/tank-claw-openshell:2026.7.1
-
-# OpenShell CLI + gateway RPMs, pinned to a tagged release for the same
-# reason as OPENCLAW_REF above.
+# OpenShell CLI + gateway RPMs, pinned to a tagged release rather than
+# `latest` for reproducible builds.
 ARG OPENSHELL_VERSION=0.0.92
 
 RUN set -eux; \
@@ -73,20 +66,23 @@ RUN set -eux; \
       /usr/local/bin/openclaw \
       /usr/local/bin/tank-os-version \
       /usr/local/bin/tank-openclaw-secrets \
-      /usr/libexec/tank-os/bootstrap-openclaw \
+      /usr/libexec/tank-os/bootstrap-csb-sandbox \
       /usr/libexec/tank-os/bootstrap-service-gator \
-      /usr/libexec/tank-os/sync-podman-secrets \
-      /usr/libexec/tank-os/bootstrap-openshell-sandbox; \
+      /usr/libexec/tank-os/check-csb-sandbox-health \
+      /usr/libexec/tank-os/sync-podman-secrets; \
     chmod 0440 /etc/sudoers.d/openclaw; \
     chown -R openclaw:openclaw /var/home/openclaw; \
-    sed -i "s|Image=ghcr.io/openclaw/openclaw:.*|Image=${OPENCLAW_OPENSHELL_IMAGE}|" \
-      /etc/containers/systemd/users/1000/openclaw.container; \
-    sed -i "s|__OPENCLAW_OPENSHELL_IMAGE_DEFAULT__|${OPENCLAW_OPENSHELL_IMAGE}|" \
-      /usr/libexec/tank-os/bootstrap-openshell-sandbox; \
+    sed -i "s|__CSB_IMAGE_TAG_DEFAULT__|${CSB_IMAGE_TAG}|" \
+      /usr/libexec/tank-os/bootstrap-csb-sandbox; \
     systemctl enable sshd.service; \
     mkdir -p /etc/systemd/user/default.target.wants; \
     ln -sf /usr/lib/systemd/user/openshell-gateway.service \
       /etc/systemd/user/default.target.wants/openshell-gateway.service; \
+    ln -sf /usr/lib/systemd/user/openclaw.service \
+      /etc/systemd/user/default.target.wants/openclaw.service; \
+    mkdir -p /etc/systemd/user/timers.target.wants; \
+    ln -sf /usr/lib/systemd/user/openclaw-healthcheck.timer \
+      /etc/systemd/user/timers.target.wants/openclaw-healthcheck.timer; \
     for unit in \
       cloud-init-local.service \
       cloud-init-network.service \

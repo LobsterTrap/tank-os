@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodically verify the CSB sandbox's gateway is healthy
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Replaces bootstrap-openshell-sandbox and bootstrap-openclaw's job for the
+# CSB-based architecture (see docs/dev/csb-bootc-deployment-design.md's
+# "The design" section). Runs as the ExecStart of openclaw.service (a plain
+# systemd --user unit, not a Podman Quadlet -- CSB's own image is run via
+# `openshell sandbox create`, not `podman run` directly).
+#
+# Four jobs, all idempotent except the sandbox itself (recreated fresh on
+# every start -- Open Question 7's "no dependency on StartupResume"):
+#   1. Auto-provision the gateway token as a Podman secret on first boot,
+#      mirroring bootstrap-openclaw's old self-service UX.
+#   2. Register/update OpenShell providers for whichever of CSB's
+#      provider-routed credentials (openai, github) tank-os has a secret
+#      for (Finding I).
+#   3. Stage whichever of CSB's read_secret()-routed keys (Finding G/K)
+#      tank-os has a secret for, via --upload + a shell-wrapper trailing
+#      command -- never via --env/--credential with a literal value.
+#   4. Delete any sandbox left over from a prior start, then run
+#      `openshell sandbox create` in the background and poll until the
+#      sandbox reports Ready (Finding L: the CLI's foreground attachment is
+#      cosmetic, not the supervised workload -- see step 5 below).
+
+csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
+sandbox_name="tank-csb"
+upload_dir="/dev/shm/tank-os-csb-upload"
+
+secret_exists() {
+  podman secret inspect "$1" >/dev/null 2>&1
+}
+
+# --- 0. Wipe any staged-secret leftovers from a prior run -------------------
+#
+# upload_dir is a FIXED, well-known path (tmpfs-backed, never touches
+# persistent disk) rather than a mktemp -d location. This is deliberate: step
+# 5 below backgrounds `openshell sandbox create` and this script exits (after
+# polling for Ready) while that backgrounded process is still running --
+# there is no point at which this script could safely `rm` the upload
+# directory itself, because `openshell` (the thing that actually reads the
+# files via --upload) may still be reading them asynchronously after this
+# script has exited (see step 5's comment for why it can't `exec` into
+# `create` and let that be the cleanup boundary instead). So cleanup cannot
+# happen at the *end* of a successful run; instead, every run wipes and
+# recreates this fixed directory at the *start*, before staging any new
+# secrets into it. This mirrors the same "delete-then-create fresh every
+# start" philosophy step 4 already applies to the sandbox itself. Exposure is
+# bounded to "the currently-running instance's files, for as long as that
+# instance is alive" rather than "accumulating leftover directories
+# forever."
+rm -rf "$upload_dir"
+mkdir -p "$upload_dir"
+chmod 700 "$upload_dir"
+
+# Never `export VAR="$(cmd)"` directly -- under `set -euo pipefail`,
+# export/local/declare mask the command substitution's exit status.
+# Capture into a plain variable with an explicit check first, every time.
+read_secret_value() {
+  local name="$1" value
+  value="$(podman secret inspect --showsecret --format '{{.SecretData}}' "$name")" || exit 1
+  printf '%s' "$value"
+}
+
+# --- 1. Auto-provision the gateway token -----------------------------------
+
+if ! secret_exists openclaw_gateway_token; then
+  openssl rand -hex 32 | podman secret create openclaw_gateway_token -
+fi
+
+# --- 2. Provider registration (Finding I, Open Question 7) -----------------
+
+register_provider() {
+  local name="$1" type="$2" env_var="$3" secret_name="$4" secval
+  secret_exists "$secret_name" || return 0
+  secval="$(read_secret_value "$secret_name")" || exit 1
+  export "$env_var"="$secval"
+  if openshell provider get "$name" >/dev/null 2>&1; then
+    openshell provider update "$name" --from-existing
+  else
+    openshell provider create --name "$name" --type "$type" --from-existing
+  fi
+  unset "$env_var"
+}
+
+register_provider openai-claw openai OPENAI_API_KEY openai_api_key
+register_provider github-claw github GH_TOKEN gh_token
+
+provider_args=()
+openshell provider get openai-claw >/dev/null 2>&1 && provider_args+=(--provider openai-claw)
+openshell provider get github-claw >/dev/null 2>&1 && provider_args+=(--provider github-claw)
+
+# --- 3. Stage non-provider-routed secrets for --upload (Finding K) ---------
+
+upload_args=()
+wrapper_lines=()
+
+stage_secret() {
+  local secret_name="$1" env_var="$2" required="$3" f
+  if ! secret_exists "$secret_name"; then
+    if [[ "$required" == "required" ]]; then
+      echo "bootstrap-csb-sandbox: required secret '$secret_name' not found" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  f="$upload_dir/$env_var"
+  ( umask 077; read_secret_value "$secret_name" > "$f" )
+  upload_args+=(--upload "$f:/tmp/$env_var")
+  wrapper_lines+=("export $env_var=\"\$(cat /tmp/$env_var)\"; rm -f /tmp/$env_var;")
+}
+
+stage_secret openclaw_gateway_token OPENCLAW_GATEWAY_TOKEN required
+stage_secret anthropic_api_key      ANTHROPIC_API_KEY      optional
+if secret_exists gemini_api_key; then
+  stage_secret gemini_api_key GOOGLE_API_KEY optional
+elif secret_exists google_api_key; then
+  stage_secret google_api_key GOOGLE_API_KEY optional
+fi
+stage_secret xai_api_key     XAI_API_KEY     optional
+stage_secret mistral_api_key MISTRAL_API_KEY optional
+stage_secret cohere_api_key  COHERE_API_KEY  optional
+
+wrapper="$(printf '%s ' "${wrapper_lines[@]}")exec /app/entrypoint.sh"
+
+# --- 4. Recreate the sandbox fresh every start, then exec into it ----------
+
+openshell sandbox delete "$sandbox_name" >/dev/null 2>&1 || true
+
+# `openshell sandbox delete` returning does not guarantee the name is free
+# yet -- observed in testing: an immediate `sandbox create` with the same
+# name can fail with "already exists" right after `delete` reported success,
+# because the backend releases the name asynchronously. Poll until the name
+# is actually gone (or give up and let `create` below surface a real
+# conflict) instead of racing it.
+for _ in $(seq 1 30); do
+  openshell sandbox get "$sandbox_name" >/dev/null 2>&1 || break
+  sleep 1
+done
+
+# upload_dir is intentionally NOT removed here. The `create` below runs in
+# the background and this script exits while it's still starting up, so no
+# bash code here can run "after openshell has read the files" -- the
+# wipe-and-recreate at the top of the script (step 0) is what cleans up, on
+# the *next* run, before that run stages its own fresh secrets.
+
+# --- 5. Create in the background, then poll for Ready (Finding L) ----------
+#
+# Finding L: killing the `openshell sandbox create` CLI process does not
+# tear down the sandbox -- the CLI's foreground attachment is cosmetic (a
+# log-follow), not the supervised workload. That means this script cannot
+# `exec` into `sandbox create` and let systemd treat that process as the
+# service (Variant A from the design doc); systemd would have nothing to
+# supervise once `create` (or a `kill` of it) returns, and Restart=on-failure
+# would never fire on a hung/wedged sandbox. Instead: background the create,
+# poll `sandbox get` until Ready (or timeout), then exit -- this script is a
+# oneshot that hands off to openclaw-healthcheck.timer for ongoing
+# supervision (see openclaw.service / openclaw-healthcheck.{service,timer}).
+timeout 600 openshell sandbox create \
+  --from "$csb_image" \
+  --name "$sandbox_name" \
+  "${provider_args[@]}" \
+  "${upload_args[@]}" \
+  --no-tty \
+  -- sh -c "$wrapper" >/dev/null 2>&1 &
+create_pid=$!
+
+ready=false
+for _ in $(seq 1 120); do
+  if openshell sandbox get "$sandbox_name" 2>/dev/null | grep -q Ready; then
+    ready=true
+    break
+  fi
+  sleep 5
+done
+
+kill "$create_pid" 2>/dev/null || true
+
+if [[ "$ready" != true ]]; then
+  echo "bootstrap-csb-sandbox: $sandbox_name did not reach Ready within 600s" >&2
+  exit 1
+fi

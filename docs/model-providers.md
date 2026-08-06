@@ -1,66 +1,67 @@
 # Model Providers And Secrets
 
-tank-os keeps model provider keys out of the image and out of `~/.openclaw/openclaw.json`.
-Users add keys as rootless Podman secrets owned by the `openclaw` user, then run
-`tank-openclaw-secrets` to sync Quadlet secret mounts and OpenClaw SecretRefs.
+tank-os keeps model provider keys out of the image and out of any
+persisted config file. Users add keys as rootless Podman secrets owned by
+the `openclaw` user; `bootstrap-csb-sandbox` (the `ExecStart` of
+`openclaw.service`) reads whichever of them exist on every start and wires
+them into the `tank-csb` sandbox, either as an OpenShell `provider` or via
+`--upload` plus a shell wrapper, depending on the key — see
+`docs/dev/csb-bootc-deployment-design.md`'s Component Roles table and
+Findings I/K for why credentials split across those two paths.
 
-## Built-In Provider Keys
-
-Create secrets after the machine boots, before starting or restarting the OpenClaw service:
+There is no separate "sync" step for these keys anymore: creating or
+changing a secret and restarting `openclaw.service` is enough.
 
 ```bash
-sudo -iu openclaw
-printf '%s' "$ANTHROPIC_API_KEY" | podman secret create anthropic_api_key -
-printf '%s' "$OPENAI_API_KEY" | podman secret create openai_api_key -
-printf '%s' "$GEMINI_API_KEY" | podman secret create gemini_api_key -
-printf '%s' "$OPENROUTER_API_KEY" | podman secret create openrouter_api_key -
-tank-openclaw-secrets
 systemctl --user restart openclaw.service
 ```
 
-Supported OpenClaw secret names:
+## Supported Secrets
 
-| Podman secret | Container env | Notes |
+| Podman secret | How it reaches `tank-csb` | Notes |
 | --- | --- | --- |
-| `anthropic_api_key` | `ANTHROPIC_API_KEY` | Built-in `anthropic/*` models use env auth directly; the helper does not write a provider override. |
-| `openai_api_key` | `OPENAI_API_KEY` | Built-in `openai/*` models use env auth directly; the helper does not write a provider override. |
-| `gemini_api_key` | `GEMINI_API_KEY` | Adds `models.providers.google` with a SecretRef. |
-| `google_api_key` | `GOOGLE_API_KEY` | Alternate Google env name; used only if `gemini_api_key` is absent. |
-| `openrouter_api_key` | `OPENROUTER_API_KEY` | Adds `models.providers.openrouter` with a SecretRef. |
-| `model_endpoint_api_key` | `MODEL_ENDPOINT_API_KEY` | Key only; custom endpoint metadata is still manual. |
-| `telegram_bot_token` | `TELEGRAM_BOT_TOKEN` | Adds `channels.telegram.botToken` with a SecretRef. |
+| `openclaw_gateway_token` | `--upload` + shell wrapper | Auto-provisioned on first start if not already set — see `docs/provisioning.md`'s Gateway Token Setup. |
+| `openai_api_key` | OpenShell `provider` (`openai-claw`) | The sandboxed process only ever sees an OpenShell placeholder, never the real key. |
+| `gh_token` | OpenShell `provider` (`github-claw`) | Same Podman secret service-gator already uses read-only for its own GitHub access — do not rename or duplicate it. |
+| `anthropic_api_key` | `--upload` + shell wrapper | CSB routes this through its own `read_secret()`, not a provider (Finding G's mixed state — CSB isn't purer than this itself). |
+| `gemini_api_key` | `--upload` + shell wrapper | Preferred Google key name; used if present. |
+| `google_api_key` | `--upload` + shell wrapper | Alternate Google env name; used only if `gemini_api_key` is absent. |
+| `xai_api_key` | `--upload` + shell wrapper | New since the CSB pivot — tank-os didn't support xAI before. |
+| `mistral_api_key` | `--upload` + shell wrapper | New since the CSB pivot. |
+| `cohere_api_key` | `--upload` + shell wrapper | New since the CSB pivot. |
 
-The helper writes rootless Quadlet drop-ins under
-`~/.config/containers/systemd/openclaw.container.d/` and updates
-`~/.openclaw/openclaw.json` with references like:
+All of the above except the gateway token are optional — CSB only reads
+whichever keys have a corresponding secret. See `docs/provisioning.md`'s
+API Key Setup section for the exact `podman secret create` commands.
 
-```json
-{
-  "secrets": {
-    "providers": {
-      "default": { "source": "env" }
-    }
-  },
-  "models": {
-    "providers": {
-      "google": {
-        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
-        "api": "google-generative-ai",
-        "apiKey": { "source": "env", "provider": "default", "id": "GEMINI_API_KEY" },
-        "models": [{ "id": "gemini-3.1-pro-preview", "name": "gemini-3.1-pro-preview" }]
-      }
-    }
-  }
-}
-```
+## Superseded: `telegram_bot_token`, `openrouter_api_key`, `model_endpoint_api_key`
 
-This mirrors the installer model: Podman secrets supply environment variables,
-and OpenClaw config references those env values through SecretRefs when explicit
-provider metadata is needed. For built-in Anthropic and OpenAI models, the env
-vars are enough, so `tank-openclaw-secrets` leaves the built-in provider catalog
-in place.
+These three secret names are **no longer supported** after the CSB pivot.
+tank-os's previous OpenClaw integration wrote them directly into
+`openclaw.json` as custom channel/provider config; CSB generates its own
+`openclaw.json` fresh on every start (`configure-openclaw.mjs`) and has no
+equivalent hook for arbitrary channels or custom model endpoints today.
+See `docs/dev/csb-bootc-deployment-design.md` Open Question 3 for the
+open question this leaves (which existing tank-os docs/features still
+apply unchanged under CSB) and for whether/how this gets revisited.
 
-## Custom Providers
+If you were relying on any of these, creating the Podman secret no longer
+has any effect — there is nothing left to read it. This section is kept
+rather than deleted so a reader mid-migration isn't left wondering whether
+the feature silently vanished: it did, and this is why.
+
+## Superseded: Custom Providers via Quadlet drop-in
+
+The section below describes tank-os's previous mechanism for adding a
+provider `openclaw.json` doesn't support out of the box (e.g. Moonshot),
+by hand-writing a Quadlet secret drop-in plus custom `models.providers`
+JSON. **This no longer works**: there is no more `openclaw.container`
+Quadlet to attach a drop-in to, and CSB rewrites `openclaw.json` from
+scratch on every start, so a hand-edited file would be discarded on the
+next restart regardless. Kept for historical reference only, not as
+working guidance.
+
+### Old mechanism (pre-CSB, no longer functional)
 
 A Podman secret by itself is not enough to create an arbitrary provider. OpenClaw
 also needs the provider id, API adapter, base URL, and at least one model id.
@@ -104,13 +105,3 @@ Then add the non-secret provider metadata to `~/.openclaw/openclaw.json`:
   }
 }
 ```
-
-Restart after changing secrets or provider config:
-
-```bash
-systemctl --user restart openclaw.service
-```
-
-For now, `tank-openclaw-secrets` intentionally auto-configures only the known
-provider mappings above. Custom providers remain explicit so the helper does not
-guess an unsafe base URL or model catalog from a secret name.
