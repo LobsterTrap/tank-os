@@ -44,11 +44,20 @@ secret_exists() {
 # Without it every `openshell` command below fails immediately with "No
 # active gateway", silently (the sandbox-create call two steps down redirects
 # to /dev/null), and this script's poll loop spins for the full 600s waiting
-# on a Ready state nothing can ever produce. `openshell status` succeeding
-# is our signal that a previous run (or first-boot registration on an
-# earlier start) already did this.
-if ! openshell status >/dev/null 2>&1; then
-  openshell gateway add --local https://127.0.0.1:17670
+# on a Ready state nothing can ever produce.
+#
+# `openshell status` always exits 0 -- even when unconfigured, it just
+# prints "No gateway configured." -- so it can't be used as a guard here.
+# `openshell gateway add` itself isn't idempotent either: run a second time
+# it exits 1 with "Gateway 'openshell' already exists." That's the one
+# expected failure on every boot after the first, so treat it (and only it)
+# as success; any other failure means registration is genuinely broken and
+# should stop the script rather than let it silently spin for 600s again.
+if ! add_output="$(openshell gateway add --local https://127.0.0.1:17670 2>&1)"; then
+  if ! grep -q "already exists" <<<"$add_output"; then
+    echo "bootstrap-csb-sandbox: gateway registration failed: $add_output" >&2
+    exit 1
+  fi
 fi
 
 # --- 2. Wipe any staged-secret leftovers from a prior run -------------------

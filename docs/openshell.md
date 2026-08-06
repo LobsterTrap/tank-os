@@ -60,11 +60,13 @@ L). Its `ExecStart`, `bootstrap-csb-sandbox`, does five things, all
 idempotent except the sandbox itself:
 
 1. Registers the local gateway with the CLI (`openshell gateway add --local
-   https://127.0.0.1:17670`), if `openshell status` shows it isn't already.
-   `openshell-gateway.service` generates its own mTLS client bundle on first
-   start, but nothing else registers it with the CLI — without this step,
-   every subsequent `openshell` command in the script fails immediately
-   with "No active gateway."
+   https://127.0.0.1:17670`), tolerating the "already exists" failure `add`
+   returns on every boot after the first (`openshell status` always exits
+   0 even when unconfigured, so it can't be used as a guard here).
+   `openshell-gateway.service` generates its own mTLS client bundle on
+   first start, but nothing else registers it with the CLI — without this
+   step, every subsequent `openshell` command in the script fails
+   immediately with "No active gateway."
 2. Auto-provisions the `openclaw_gateway_token` Podman secret on first
    boot, if it doesn't already exist.
 3. Registers/updates OpenShell providers (`openai-claw`, `github-claw`)
