@@ -56,20 +56,26 @@ one.
 Unlike a service that resumes previous state, `openclaw.service` recreates
 `tank-csb` from scratch on every start (no dependency on OpenShell's
 `StartupResume` — see `docs/dev/csb-bootc-deployment-design.md` Finding
-L). Its `ExecStart`, `bootstrap-csb-sandbox`, does four things, all
+L). Its `ExecStart`, `bootstrap-csb-sandbox`, does five things, all
 idempotent except the sandbox itself:
 
-1. Auto-provisions the `openclaw_gateway_token` Podman secret on first
+1. Registers the local gateway with the CLI (`openshell gateway add --local
+   https://127.0.0.1:17670`), if `openshell status` shows it isn't already.
+   `openshell-gateway.service` generates its own mTLS client bundle on first
+   start, but nothing else registers it with the CLI — without this step,
+   every subsequent `openshell` command in the script fails immediately
+   with "No active gateway."
+2. Auto-provisions the `openclaw_gateway_token` Podman secret on first
    boot, if it doesn't already exist.
-2. Registers/updates OpenShell providers (`openai-claw`, `github-claw`)
+3. Registers/updates OpenShell providers (`openai-claw`, `github-claw`)
    for whichever of CSB's provider-routed credentials (`openai_api_key`,
    `gh_token`) tank-os has a Podman secret for.
-3. Stages whichever of CSB's `read_secret()`-routed keys (gateway token,
+4. Stages whichever of CSB's `read_secret()`-routed keys (gateway token,
    and any of the anthropic/gemini-or-google/xai/mistral/cohere keys)
    tank-os has a secret for, via `--upload` plus a shell-wrapper trailing
    command — never via a literal `--env`/`--credential` value, which would
    put the real secret in the process's argv.
-4. Deletes any sandbox left over from a prior start, then runs
+5. Deletes any sandbox left over from a prior start, then runs
    `openshell sandbox create` in the background and polls `openshell
    sandbox get tank-csb` until it reports `Ready` (or times out at 600s).
 
