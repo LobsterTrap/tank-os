@@ -539,6 +539,87 @@ re-ran `bootstrap-csb-sandbox` and brought `tank-csb` back to `Ready`
 (exercising the same delete-then-poll-until-gone recreate path Finding K's
 script already relies on for every start).
 
+### Finding M — end-to-end verification on the shared dev VM confirmed the design works, with two environment-driven test-method caveats and one welcome surprise
+
+**2026-08-05/06, Task 6 of the implementation plan (final verification).**
+Applied the actual current-checkout files (`bootstrap-csb-sandbox`,
+`sync-podman-secrets`, `check-csb-sandbox-health`, `openclaw.service`,
+`openclaw-healthcheck.service`/`.timer`) to the same shared dev VM prior
+tasks used, and ran Task 6's exact fresh-boot, dashboard-reachability, and
+double-restart checks against them.
+
+**Result: all functional acceptance criteria passed.** Removing
+`openclaw_gateway_token` and restarting `openclaw.service` auto-provisioned
+a fresh token, brought `tank-csb` to `Ready`, and left the unit `active
+(exited)` with `RemainAfterExit=yes`, exactly as Variant B predicts. Two
+consecutive `systemctl --user restart openclaw.service` runs each produced
+a fresh `tank-csb` (a new sandbox Id each time) reaching `Ready` with no
+leftover-name conflicts. The dashboard responded `HTTP_200` with real
+OpenClaw Control HTML, both via `openshell sandbox exec -n tank-csb
+--no-tty -- curl ...` (internal) and via `curl` against the VM's own
+`127.0.0.1:18789` (the actual `openshell forward` bind, not just the
+sandbox-internal path).
+
+**Caveat 1 — the literal `/usr/libexec/tank-os` install path was not
+exercised, and this is a genuine gap, not a shortcut.** This dev VM's
+running bootc image predates this branch's rootfs changes, and, being an
+ostree/composefs deployment, `/usr` is read-only by design — `sudo cp` into
+`/usr/libexec/tank-os` fails with `Read-only file system`, and there is no
+existing mountpoint file there for a new script (`bootstrap-csb-sandbox`,
+`check-csb-sandbox-health`) to bind-mount over. `ostree admin unlock` would
+have made the deployment mutable, but was treated as out of scope for this
+task to invoke unilaterally on a shared VM (a real security-relevant
+control, not a paperwork obstacle) rather than the intended lighter-weight
+"patch a running VM" path Task 6 was scoped for. Verification instead
+placed the actual checkout's files under the `openclaw` user's own home
+directory and pointed the (already-writable, per the brief's own Step 1)
+`~/.config/systemd/user/openclaw*.service` units' `ExecStart=` lines at
+that location instead of `/usr/libexec/tank-os`. This exercises the real
+script/unit *content* and *behavior* end to end (everything Steps 2–3
+check), but not the final `/usr/libexec/tank-os` path itself, nor the
+`Containerfile`/`sed`-substitution install step Task 4 changed — reinforcing
+Step 4's own recommendation below that a full `make build && make
+build-qcow2` cycle against a fresh VM is a warranted pre-ship check, not
+just a formality.
+
+**Caveat 2 — the literal external `ssh -L 18789:127.0.0.1:18789` tunnel and
+browser check could not be independently re-run from this task's own
+execution environment**, which silently rejects any `ssh` invocation using
+`-L`/`-N` local port-forwarding regardless of sandbox settings (plain
+remote-command `ssh` calls to the same VM worked throughout this task
+without issue). This is a restriction of the agent's own execution
+environment, not the VM or the design — no evidence surfaced that
+`openshell forward` itself is broken; quite the opposite, curling the
+VM's own `127.0.0.1:18789` (the literal bind `openshell forward` creates)
+returned `200` with real dashboard content. This mirrors Open Question
+6's own precedent of naming a literal check that couldn't be independently
+re-verified in a given test session rather than silently skipping it: the
+mechanism is proven working right up to the point the human's own browser
+would attach to it, but that final hop needs a human (or an environment
+that permits local port-forwarding) to close out.
+
+**A welcome surprise:** after this task's Step 5 deleted `tank-csb` to
+clean up, `openclaw-healthcheck.timer` (left enabled from Step 1)
+detected the now-unreachable gateway within its normal 30s cadence and
+transparently restarted `openclaw.service`, which recreated `tank-csb`
+and brought it back to `Ready` on its own — an unplanned, real-world
+repeat of Finding L's own deliberate kill-test, this time triggered by an
+ordinary sandbox deletion rather than a killed CLI process. Separately,
+`openshell sandbox delete tank-csb --force` (the exact form both this
+task's brief and Finding L's own text use) now errors with `unexpected
+argument '--force' found` on the CLI version installed on this VM — a
+harmless CLI-surface drift (`openshell sandbox delete <NAME>...` takes no
+`--force` flag in this version) worth fixing in the brief/plan text, not a
+functional defect.
+
+**Pre-ship follow-up (Task 6's Step 4):** this verification ran against a
+manually-patched dev VM, not a full `make build && make build-qcow2`
+image — run that heavier rebuild-and-reboot cycle once, against a fresh
+VM, as a final sanity check before this ships to real users. It is the
+only remaining way to exercise the actual `Containerfile`/`sed`
+substitution path Task 4 changed and the real `/usr/libexec/tank-os`
+install location, neither of which Caveat 1 above was able to re-verify.
+
 ## The design
 
 ### Component roles
