@@ -33,26 +33,39 @@ cd ~/.openclaw
 openclaw status --deep
 ```
 
-The `openclaw` command on the host delegates to the running OpenClaw container.
-See [cli.md](cli.md) for the wrapper behavior and multi-instance notes.
+The `openclaw` command on the host delegates to OpenClaw as it runs inside the
+`tank-csb` OpenShell sandbox (there is no more separate "OpenClaw container" —
+see the known gap noted in [cli.md](cli.md) for the wrapper's current
+container-targeting default). See [cli.md](cli.md) for the wrapper behavior
+and multi-instance notes.
 
 ### First Boot: Image Pull Timeout
 
-The OpenClaw gateway container (`ghcr.io/openclaw/openclaw:latest`) is ~900MB.
-On first boot, systemd starts the service while pulling the image. If the pull
-takes longer than the default 5-minute timeout, the service fails.
+CSB's own image (`quay.io/redhat-et/openclaw:csb-<tag>`, pinned by the
+`CSB_IMAGE_TAG` build arg in `bootc/Containerfile` — the current default is
+`quay.io/redhat-et/openclaw:csb-2026.07.21`) is pulled as part of `openshell
+sandbox create --from`, which runs as `openclaw.service`'s `ExecStart` on
+every boot. There is no separate `podman pull` step in this flow the way
+there was for the old OpenClaw Quadlet — `openshell` manages the fetch
+itself. `openclaw.service` sets `TimeoutStartSec=900` (15 minutes) to absorb
+a slow first pull; if the pull takes longer than that, the unit fails.
 
-**Workaround**: Pre-pull the image before or after first boot:
+**Workaround**: pre-warm Podman's local image cache before first boot (or
+before restarting the service), so `openshell sandbox create`'s own pull is
+a no-op:
 
 ```bash
 ssh openclaw@<host>
 sudo -iu openclaw
-podman pull ghcr.io/openclaw/openclaw:latest
+podman pull quay.io/redhat-et/openclaw:csb-2026.07.21
 systemctl --user restart openclaw.service
 ```
 
-Once cached, subsequent restarts are instant. Alternatively, increase the systemd
-timeout in the image customization (future PR).
+This works because OpenShell's default image-pull policy is `missing` (pull
+only when no local copy exists), so a `podman pull` that lands in the same
+local Podman storage `openshell sandbox create` reads from is picked up as
+already-cached. Use whatever tag matches your `CSB_IMAGE_TAG` build arg if
+you've overridden the default. Once cached, subsequent restarts are fast.
 
 ## EC2
 
@@ -242,7 +255,10 @@ systemctl --user restart openclaw.service
 
 ## Podman Secrets
 
-Create Podman secrets in the `openclaw` user's rootless store and inject them into the OpenClaw container.
+Create Podman secrets in the `openclaw` user's rootless store.
+`bootstrap-csb-sandbox` reads OpenClaw's own secrets directly into the
+`tank-csb` sandbox on every start; `tank-openclaw-secrets` handles
+service-gator's separately (see "Applying Secrets" below).
 
 ### Injecting Secrets From the Host
 

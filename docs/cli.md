@@ -1,9 +1,11 @@
 # OpenClaw CLI
 
 tank-os provides a host-side `openclaw` wrapper at `/usr/local/bin/openclaw`.
-It delegates into the running OpenClaw container, so users do not need to install
-a separate Node.js/OpenClaw CLI on the host and do not need to open an
-interactive shell inside the container for normal operations.
+It delegates into wherever OpenClaw is actually running (the `tank-csb`
+OpenShell sandbox's container — see the known gap just below on the
+wrapper's stale default target), so users do not need to install a separate
+Node.js/OpenClaw CLI on the host and do not need to open an interactive
+shell inside the container for normal operations.
 
 **Known gap since the CSB migration:** the wrapper's default target,
 `OPENCLAW_CONTAINER=openclaw`, assumes a container literally named
@@ -93,8 +95,10 @@ provide a way to obtain, so it isn't a usable substitute either (same Open
 Question 6). Treat this as an open gap if your network blocks
 port-forwards to `18789` specifically, not a solved workaround today.
 
-The wrapper targets the `openclaw` container by default. To target another
-container, either use `--container`:
+The wrapper targets a container named `openclaw` by default — the known gap
+noted at the top of this page, since no container by that name exists under
+the CSB architecture. Until the wrapper is updated, target the real
+container explicitly, either with `--container`:
 
 ```bash
 openclaw --container openclaw-research doctor

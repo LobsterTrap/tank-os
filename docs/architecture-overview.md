@@ -176,7 +176,7 @@ section for a gap in the network-policy layer under rootless Podman
 - `docs/openshift-virtualization.md` — per-user provisioning on OpenShift Virtualization
 - `docs/provisioning.md` — cloud-init, EC2, libvirt, editing OpenClaw config
 - `docs/openshell.md` — OpenShell sandboxing architecture in full detail
-- `docs/service-gator.md` — the third container, scoped external-service access
+- `docs/service-gator.md` — the second container, scoped external-service access
 - `docs/model-providers.md` — API keys and inference provider configuration
 - `docs/cli.md` — the OpenClaw CLI and dashboard
 - `docs/dev/sandbox-image-content.md` — open discussion on sandbox image scope and content
