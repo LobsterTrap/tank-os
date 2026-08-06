@@ -33,18 +33,21 @@ secret_exists() {
 # --- 0. Wipe any staged-secret leftovers from a prior run -------------------
 #
 # upload_dir is a FIXED, well-known path (tmpfs-backed, never touches
-# persistent disk) rather than a mktemp -d location. This is deliberate: the
-# script ends with `exec openshell sandbox create ...`, which replaces this
-# bash process entirely -- there is no bash process left afterward to run a
-# cleanup `rm`, and any `rm` placed before `exec` would delete the files
-# before `openshell` (the thing that actually reads them via --upload) has
-# had a chance to start. So cleanup cannot happen at the *end* of a
-# successful run; instead, every run wipes and recreates this fixed
-# directory at the *start*, before staging any new secrets into it. This
-# mirrors the same "delete-then-create fresh every start" philosophy step 4
-# already applies to the sandbox itself. Exposure is bounded to "the
-# currently-running instance's files, for as long as that instance is
-# alive" rather than "accumulating leftover directories forever."
+# persistent disk) rather than a mktemp -d location. This is deliberate: step
+# 5 below backgrounds `openshell sandbox create` and this script exits (after
+# polling for Ready) while that backgrounded process is still running --
+# there is no point at which this script could safely `rm` the upload
+# directory itself, because `openshell` (the thing that actually reads the
+# files via --upload) may still be reading them asynchronously after this
+# script has exited (see step 5's comment for why it can't `exec` into
+# `create` and let that be the cleanup boundary instead). So cleanup cannot
+# happen at the *end* of a successful run; instead, every run wipes and
+# recreates this fixed directory at the *start*, before staging any new
+# secrets into it. This mirrors the same "delete-then-create fresh every
+# start" philosophy step 4 already applies to the sandbox itself. Exposure is
+# bounded to "the currently-running instance's files, for as long as that
+# instance is alive" rather than "accumulating leftover directories
+# forever."
 rm -rf "$upload_dir"
 mkdir -p "$upload_dir"
 chmod 700 "$upload_dir"

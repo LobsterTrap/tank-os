@@ -180,19 +180,27 @@ with `podman login` before `make push`.
 
 ## What The Image Installs
 
-The image creates an `openclaw` login user with UID/GID 1000, enables linger for that user, and installs a rootless Quadlet at:
+The image creates an `openclaw` login user with UID/GID 1000, enables linger for that user, and installs:
 
 ```text
-/etc/containers/systemd/users/1000/openclaw.container
+/usr/libexec/tank-os/bootstrap-csb-sandbox
+/usr/lib/systemd/user/openclaw.service
+/usr/lib/systemd/user/openclaw-healthcheck.service
+/usr/lib/systemd/user/openclaw-healthcheck.timer
 ```
 
-On boot, OpenClaw state lives at:
+`openclaw.service` is a plain `systemd --user` oneshot unit
+(`RemainAfterExit=yes`), not a Podman Quadlet. On boot it runs
+`bootstrap-csb-sandbox`, which provisions the gateway token, registers
+OpenShell providers, stages secrets, and starts `openshell sandbox create`
+for the `tank-csb` sandbox in the background — polling until the sandbox
+reports `Ready`, then exiting. `openclaw-healthcheck.timer` takes over from
+there, periodically checking the gateway and restarting the sandbox if it
+stops responding.
 
-```text
-/var/home/openclaw/.openclaw
-```
-
-When logged in as `openclaw`, that is `~/.openclaw`.
+There is no host-side `~/.openclaw` config to seed. CSB's own image
+generates its OpenClaw configuration fresh inside the `tank-csb` sandbox on
+every start, so nothing on the host reads or writes that file.
 
 ## Launch on Linux (QEMU)
 
