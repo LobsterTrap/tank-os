@@ -61,6 +61,12 @@ RUN set -eux; \
 
 COPY rootfs/ /
 
+# bootc-fetch-apply-updates.timer is enabled by default on the Fedora
+# bootc base and polls whatever registry origin is baked into the image.
+# tank-os only supports updates via manual `bootc switch`/`bootc upgrade`
+# (see docs/build.md), so the timer just fails on every boot -- most
+# visibly on images built locally with the default `localhost/tank-os`
+# tag, where there's no registry to poll at all.
 RUN set -eux; \
     chmod 0755 \
       /usr/local/bin/openclaw \
@@ -75,6 +81,7 @@ RUN set -eux; \
     sed -i "s|__CSB_IMAGE_TAG_DEFAULT__|${CSB_IMAGE_TAG}|" \
       /usr/libexec/tank-os/bootstrap-csb-sandbox; \
     systemctl enable sshd.service; \
+    systemctl mask bootc-fetch-apply-updates.timer; \
     mkdir -p /etc/systemd/user/default.target.wants; \
     ln -sf /usr/lib/systemd/user/openshell-gateway.service \
       /etc/systemd/user/default.target.wants/openshell-gateway.service; \
