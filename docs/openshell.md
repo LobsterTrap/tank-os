@@ -1,13 +1,21 @@
 # OpenShell sandboxing
 
-[OpenShell](https://github.com/NVIDIA/OpenShell) gives OpenClaw's tool calls
+[OpenShell](https://github.com/NVIDIA/OpenShell) gives OpenClaw
 application-layer sandboxing (filesystem, network, process policy) on top
-of the kernel isolation the VM itself already provides. tank-os wires it in
-as OpenClaw's native sandbox backend rather than running OpenClaw's own
-Docker-based sandbox — the two are mutually exclusive in OpenClaw's config
-schema (`agents.defaults.sandbox.docker.*` settings are rejected once
-`backend: "openshell"` is set), so this replaces OpenClaw's built-in
-sandbox entirely, it doesn't wrap it.
+of the kernel isolation the VM itself already provides. tank-os runs
+OpenClaw itself inside a single OpenShell sandbox, `tank-csb`, built from
+[redhat-et/openclaw-csb](https://github.com/redhat-et/openclaw-csb)'s
+("CSB," the Corporate Standard Build) own published image — OpenClaw's
+tool calls run as ordinary child processes inside that same sandbox,
+constrained by the sandbox's own filesystem/network/process policy,
+rather than an unsandboxed OpenClaw reaching out over SSH to a second,
+separate tool-call sandbox. This is the "one-sandbox model" — see
+`docs/dev/csb-bootc-deployment-design.md` Finding C for how this was
+confirmed against CSB's own onboarding scripts. It replaces OpenClaw's
+own Docker-based sandbox entirely: CSB runs OpenClaw with no
+`agents.defaults.sandbox`/`openshell` plugin config at all, since
+OpenClaw doesn't need to reach a sandbox — it's already running inside
+one.
 
 ## Where each piece runs
 
@@ -17,94 +25,97 @@ sandbox entirely, it doesn't wrap it.
   installed in `bootc/Containerfile` — it is not checked into this repo.
   `bootc/Containerfile` only symlinks it into
   `/etc/systemd/user/default.target.wants/` so it starts under that user's
-  session the same way the Quadlet-generated services do; if you go
+  session the same way the other systemd-managed services do; if you go
   looking for its unit definition, `rpm -ql openshell-gateway` on the built
   image (or the RPM itself) is where to find it, not this repo. It's the
   piece that actually creates and manages sandbox containers, using that
   user's rootless Podman — it needs real container-runtime access, which
-  the OpenClaw container itself never has.
-- **The `openshell` CLI** lives inside the OpenClaw container (see
-  `bootc/openclaw-openshell/Containerfile`, a small image layered on top of
-  the published `ghcr.io/openclaw/openclaw` image with an SSH client and
-  the CLI added). OpenClaw's `openshell` plugin shells out to this CLI
-  (`sandbox get`/`sandbox create`/`sandbox ssh-config`) and then opens an
-  SSH session into the resulting sandbox — this is why `openclaw.container`
-  runs with `Network=host`: the CLI needs to reach the host-side gateway on
-  its own loopback address.
-- **The sandbox itself** is a container built from
-  `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw`
-  (Project Hummingbird-based, rebased from NVIDIA's own Ubuntu-based
-  community sandbox images). It's pre-created under a fixed name
-  (`tankos-openclaw`) by
-  `/usr/libexec/tank-os/bootstrap-openshell-sandbox` before OpenClaw's
-  gateway ever starts, so OpenClaw's plugin just finds it via `sandbox get`
-  and never needs to invoke `sandbox create` itself.
+  nothing else in this design has.
+- **The `openshell` CLI** runs directly on the VM host as the `openclaw`
+  user — installed via the same `openshell` RPM in `bootc/Containerfile`
+  as the gateway (no separate container needed for it anymore). It's
+  invoked by `/usr/libexec/tank-os/bootstrap-csb-sandbox`, the `ExecStart`
+  of `openclaw.service` (a plain systemd `--user` unit, not a Podman
+  Quadlet — CSB's image is run via `openshell sandbox create`, never
+  `podman run` directly), to register OpenShell providers, stage
+  non-provider secrets, and create/poll the `tank-csb` sandbox. There is
+  no longer a separate "OpenClaw container" for the CLI to live inside —
+  CSB's own image is what runs *as* the sandbox now, not something a host
+  container connects to.
+- **The sandbox itself** is a container created fresh from CSB's own
+  published image (`quay.io/redhat-et/openclaw:csb-<tag>`, pinned via the
+  `CSB_IMAGE_TAG` build arg in `bootc/Containerfile`/`Makefile` — not a
+  tank-os-specific derived image). It's pre-created under the fixed name
+  `tank-csb` by `bootstrap-csb-sandbox` every time `openclaw.service`
+  starts (delete-then-recreate, not resumed — see "Every-start sequence"
+  below), running CSB's own `openclaw gateway` process as the sandbox's
+  workload.
 
-## First boot sequence
+## Every-start sequence
 
-`openclaw.container`'s two `ExecStartPre=` scripts run in order:
+Unlike a service that resumes previous state, `openclaw.service` recreates
+`tank-csb` from scratch on every start (no dependency on OpenShell's
+`StartupResume` — see `docs/dev/csb-bootc-deployment-design.md` Finding
+L). Its `ExecStart`, `bootstrap-csb-sandbox`, does four things, all
+idempotent except the sandbox itself:
 
-1. `bootstrap-openclaw` — writes `openclaw.json` (including
-   `agents.defaults.sandbox` and `plugins.entries.openshell`) and a gateway
-   token, both only on first run.
-2. `bootstrap-openshell-sandbox` — installs the `@openclaw/openshell-sandbox`
-   plugin into the persisted `~/.openclaw` volume (has to happen before the
-   gateway's first start, since the config written in step 1 already
-   references it), waits for `openshell-gateway.service` to be active, and
-   pre-creates the sandbox if it doesn't already exist.
+1. Auto-provisions the `openclaw_gateway_token` Podman secret on first
+   boot, if it doesn't already exist.
+2. Registers/updates OpenShell providers (`openai-claw`, `github-claw`)
+   for whichever of CSB's provider-routed credentials (`openai_api_key`,
+   `gh_token`) tank-os has a Podman secret for.
+3. Stages whichever of CSB's `read_secret()`-routed keys (gateway token,
+   and any of the anthropic/gemini-or-google/xai/mistral/cohere keys)
+   tank-os has a secret for, via `--upload` plus a shell-wrapper trailing
+   command — never via a literal `--env`/`--credential` value, which would
+   put the real secret in the process's argv.
+4. Deletes any sandbox left over from a prior start, then runs
+   `openshell sandbox create` in the background and polls `openshell
+   sandbox get tank-csb` until it reports `Ready` (or times out at 600s).
 
-Both steps are idempotent — safe to re-run on every boot, cheap no-ops
-after the first.
+`openclaw.service` itself ships as `Type=oneshot, RemainAfterExit=yes` —
+it is *not* what supervises the running gateway day to day. The CLI's
+foreground attachment to `sandbox create` is cosmetic (a log-follow, not
+the supervised workload — confirmed by killing that process and observing
+the sandbox stay `Ready`, Finding L), so ongoing supervision comes from a
+separate `openclaw-healthcheck.timer`: every 30 seconds (after a 2-minute
+boot grace), `check-csb-sandbox-health` curls the gateway directly and, on
+failure, runs `systemctl --user restart openclaw.service`, which re-runs
+the whole bootstrap sequence and brings `tank-csb` back to `Ready`.
 
-First boot has to pull the derived OpenClaw+OpenShell image and the
-`sandboxes/openclaw` image (a few hundred MB) in addition to installing the
-plugin, which can take several minutes on a slow connection — this is why
-`openclaw.container`'s `TimeoutStartSec` is set generously (900s), the same
-"known first-boot gap" pattern already documented for the image-pull
-timeout in `docs/provisioning.md`.
+`openclaw.service`'s `ExecStartPost` also starts the dashboard forward:
+`openshell forward start 18789 tank-csb --background`, binding the VM
+guest's own loopback `18789` to the sandbox's dashboard port (see
+`docs/dev/csb-bootc-deployment-design.md` Open Question 6 for why
+`forward`, not `service expose`, was chosen).
 
-## Security trade-off: `Network=host` on `openclaw.container`
+Both `openclaw.service` and `openclaw-healthcheck.timer` are enabled at
+build time (symlinked into `default.target.wants/`/`timers.target.wants/`
+in `bootc/Containerfile`), so this whole sequence runs unattended from
+first boot — no manual `systemctl --user start` needed.
 
-`openclaw.container` runs with `Network=host` instead of Podman's default
-per-container network namespace, so the `openshell` CLI inside it can reach
-`openshell-gateway` at `https://127.0.0.1:17670` on the VM host's loopback
-interface — a container-namespaced network can't see the host's loopback
-without an explicit port mapping, and the gateway binds to loopback only
-(it's not meant to be reachable from outside the VM).
+First start has to pull CSB's image (a few hundred MB) in addition to
+creating the sandbox and installing/staging credentials, which can take
+several minutes on a slow connection — this is why `openclaw.service`'s
+`TimeoutStartSec` is set generously (900s), the same "known first-boot
+gap" pattern already documented for the image-pull timeout in
+`docs/provisioning.md`.
 
-This gives the OpenClaw container the host's full network namespace: it can
-bind any port the `openclaw` user's privileges allow and see all of that
-user's network traffic, not just what it would see in an isolated
-namespace. In this design that's a narrower exposure than it sounds --
-OpenClaw's own tool-call traffic is meant to be sandboxed by OpenShell
-*inside* the sandbox container instead, so `Network=host` mainly affects
-the outer OpenClaw process's own connectivity (the gateway's control-plane
-traffic), not the untrusted code paths OpenShell is actually there to
-contain. Still, it's a real widening of what the OpenClaw container can
-reach compared to the isolated-network default, worth calling out
-explicitly rather than leaving implicit in the Quadlet file.
+## `Network=host` is no longer needed
 
-A less permissive alternative worth revisiting: publish the gateway on a
-fixed address on Podman's default bridge network (or a dedicated Podman
-network shared by both containers) instead of the host's loopback, or have
-it listen on a Unix socket bind-mounted into the OpenClaw container. Either
-would let `openclaw.container` drop back to Podman's normal network
-isolation. Not done here because it would require coordinating a socket
-path or a stable bridge-network address across `openshell-gateway.service`
-(RPM-owned, not this repo) and `bootc/openclaw-openshell`'s CLI
-configuration — deferred rather than attempted without being able to test
-it against a real `openshell-gateway` release first.
+Earlier revisions of this design ran OpenClaw unsandboxed inside its own
+container, which needed `Network=host` so the `openshell` CLI inside that
+container could reach `openshell-gateway` on the VM host's loopback
+interface. That container is gone: `bootstrap-csb-sandbox` and the
+`openshell` CLI now run directly on the VM host (not inside any
+container), so there is no longer a container that needs host-networking
+just to reach the gateway's control-plane API. The CSB sandbox itself
+still gets Podman's normal, isolated per-container network namespace,
+with only the specific hosts/binaries its `policy.yaml` and attached
+providers allow — a strictly narrower network exposure than the old
+shape had.
 
 ## Testing this locally end to end
-
-1. Build and push the derived image first — the main image's Quadlet
-   references it by tag, so it has to exist in the registry before
-   `make build-qcow2` produces a disk that can actually boot successfully:
-
-   ```bash
-   make build-openclaw-openshell
-   make push-openclaw-openshell
-   ```
 
 1. Build the main image:
 
@@ -125,48 +136,38 @@ it against a real `openshell-gateway` release first.
    Linux, or "Launch on macOS (Apple Silicon, QEMU + HVF)" on macOS (the
    Linux script is x86_64-only) — and SSH in as `openclaw`.
 
-1. `openclaw.service` does not auto-start on first boot (a known,
-   separate bug — see `tank-os-smoke-test-summary.md` finding #6), so
-   start it manually the first time:
+1. `openclaw.service` and `openclaw-healthcheck.timer` both auto-start on
+   first boot (enabled at build time), so no manual start step is needed.
+   First boot pulls CSB's image and creates `tank-csb` fresh, which can
+   take several minutes — `systemctl --user status openclaw.service` will
+   show `activating (start)` while `bootstrap-csb-sandbox` is still
+   running. This is normal; wait for `active (exited)`.
+
+1. Verify the sandbox is actually up and healthy:
 
    ```bash
-   systemctl --user start openclaw.service
+   openshell sandbox get tank-csb
+   openshell sandbox exec -n tank-csb --no-tty -- \
+     curl -s -o /dev/null -w 'HTTP_%{http_code}\n' http://127.0.0.1:18789/
    ```
 
-   First boot pulls the derived image and the sandbox image fresh, which
-   can take several minutes — `systemctl --user status openclaw.service`
-   will show `activating (start-pre)` while
-   `bootstrap-openshell-sandbox` is still running. This is normal; wait
-   for `active (running)`.
-
-1. Verify the sandbox is actually wired in:
-
-   ```bash
-   podman exec openclaw openclaw sandbox explain
-   ```
-
-   Look for `backend: openshell` and `runtime: sandboxed` — see
-   "Inspecting sandbox state" below for what a healthy report looks like
-   and for host-side checks.
+   Look for `Phase: Ready` and `HTTP_200` — see "Inspecting sandbox state"
+   below for more checks.
 
 ## Inspecting sandbox state
-
-From inside the running OpenClaw container:
-
-```bash
-openclaw sandbox explain
-```
-
-This reports the effective sandbox mode/scope/workspace access and
-confirms `backend: openshell` with a healthy sandbox rather than a
-fallback/error state.
 
 From the VM host, as the `openclaw` user:
 
 ```bash
-systemctl --user status openshell-gateway.service
-openshell sandbox get tankos-openclaw
+systemctl --user status openclaw.service openclaw-healthcheck.timer
+openshell sandbox get tank-csb
+openshell sandbox exec -n tank-csb --no-tty -- \
+  curl -s -o /dev/null -w 'HTTP_%{http_code}\n' http://127.0.0.1:18789/
 ```
+
+A healthy sandbox reports `Phase: Ready` and returns `HTTP_200` from the
+gateway. `journalctl --user -u openclaw-healthcheck.service` shows the
+health-check timer's own restart decisions, if any.
 
 ## Known limitation: network policy enforcement under rootless Podman
 
@@ -176,28 +177,36 @@ intercepts connections and resolves the calling process's binary path via
 `/proc/<pid>/root/...` to match it against `policy.yaml`'s per-host
 `binaries` allow-lists. This resolution needs `CAP_SYS_PTRACE`, which
 rootless Podman does not grant by default — the sandbox logs a warning
-or when it can't do this ("Cannot access container filesystem for symlink
+when it can't do this ("Cannot access container filesystem for symlink
 resolution... run with CAP_SYS_PTRACE"), and falls back to literal
 path matching.
 
 **This was not fully verified as fail-closed in this session's test
 environment** (macOS + QEMU + rootless Podman machine): manual `curl`
-attempts to a non-allow-listed host from both `podman exec` and the real
-SSH bridge path did not reproduce a denial in that specific setup. This
-may be specific to the nested-virtualization test environment, or may
-indicate the policy engine needs `CAP_SYS_PTRACE` granted to the sandbox
-container to enforce reliably under rootless Podman. **Before relying on
-this for the exfiltration-test in the original upgrade plan's Phase 2/5,
-re-verify egress denial on a real target host** (bare metal or OpenShift
-Virtualization, not nested virtualization on a laptop), and if it's still
-not fail-closed, check whether the sandbox Quadlet/container needs
-`--cap-add=SYS_PTRACE` added explicitly.
+attempts to a non-allow-listed host did not reproduce a denial in that
+specific setup. This may be specific to the nested-virtualization test
+environment, or may indicate the policy engine needs `CAP_SYS_PTRACE`
+granted to the sandbox container to enforce reliably under rootless
+Podman. Before relying on this for an exfiltration test, re-verify egress
+denial on a real target host (bare metal or OpenShift Virtualization, not
+nested virtualization on a laptop), and if it's still not fail-closed,
+check whether `tank-csb`'s Podman container needs `--cap-add=SYS_PTRACE`
+added explicitly.
 
 ## Adjusting policy
 
-The sandbox's filesystem/network/process policy lives in the
-`sandboxes/openclaw` image itself (`policy.yaml`, baked in at image build
-time in `openshell-hummingbird-images`), not in tank-os. Changing policy
-means rebuilding and re-pinning that image's digest in
-`bootstrap-openshell-sandbox`, the same way any other pinned image
-reference in this repo gets updated.
+`tank-csb`'s filesystem/network/process policy lives in CSB's own image
+(`quay.io/redhat-et/openclaw:csb-<tag>`), which tank-os consumes as-is and
+does not modify or rebuild (see
+`docs/dev/csb-bootc-deployment-design.md`'s Component Roles table).
+Changing the baked-in policy means working with CSB upstream
+(`redhat-et/openclaw-csb`), not this repo.
+
+For a one-off, per-deployment policy change on an already-running
+sandbox, `openshell policy update tank-csb --add-endpoint
+host:port:access:protocol:enforcement [--add-allow
+host:port:METHOD:path_glob] --wait` live-patches the policy attached to
+`tank-csb` without touching the image. See
+`docs/dev/csb-bootc-deployment-design.md` Finding J for a concrete
+worked example — including the non-obvious gotcha that an endpoint rule
+with no explicit `binaries` allowlist silently denies every caller.

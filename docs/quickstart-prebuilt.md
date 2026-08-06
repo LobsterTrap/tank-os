@@ -9,8 +9,13 @@ images:
 | `quay.io/redhat-et/tank-os-containerdisk:latest` | Contains a ready-to-boot `disk.qcow2` — extract it and boot with any hypervisor |
 | `quay.io/redhat-et/tank-os:latest` | The bootc OS image itself — only needed for `bootc switch`/`bootc upgrade` on an existing bootc host |
 
-All three published repos (`tank-os`, `tank-claw-openshell`,
-`tank-os-containerdisk`) are public-read; no `podman login` required to pull.
+Both published repos (`tank-os`, `tank-os-containerdisk`) are public-read;
+no `podman login` required to pull. (A third repo, `tank-claw-openshell`,
+existed before the CSB pivot — tank-os no longer builds or publishes its
+own derived OpenClaw+OpenShell image; the VM now runs
+[redhat-et/openclaw-csb](https://github.com/redhat-et/openclaw-csb)'s own
+published image instead, inside an OpenShell sandbox. See
+`docs/openshell.md`.)
 
 ## Extract the disk image
 
@@ -24,8 +29,8 @@ podman cp tank-os-extract:/disk/disk.qcow2 ./tank-os-disk.qcow2
 podman rm tank-os-extract
 ```
 
-All three published tags (`tank-os`, `tank-claw-openshell`,
-`tank-os-containerdisk`) are real multi-arch manifest lists covering both
+Both published tags (`tank-os`, `tank-os-containerdisk`) are real
+multi-arch manifest lists covering both
 `arm64` and `amd64` — `podman pull`/`create` above automatically gets the
 disk matching whatever machine you run it on, no `ARCH=` flag or separate
 tag needed. (This wasn't always true: earlier in this repo's history these
@@ -436,18 +441,20 @@ What actually happens, and what to expect:
   all report `active`/`exited` normally, so the system is functionally
   fine despite `systemctl is-system-running` printing `degraded`.
 - **OpenClaw/OpenShell come up exactly as documented for QEMU.**
-  `openclaw.service` runs through the same `bootstrap-openclaw` →
-  `bootstrap-openshell-sandbox` sequence as `docs/openshell.md` describes,
-  including the known `openshell sandbox create` CLI-hang (the sandbox
-  reaches `Phase: Ready` well before the wrapping `timeout 600` process
-  exits) — this is the same pre-existing quirk on Lima as on bare QEMU, not
+  `openclaw.service` runs `bootstrap-csb-sandbox` (see `docs/openshell.md`
+  for the full every-start sequence), which deliberately backgrounds
+  `openshell sandbox create` and polls until the sandbox reports `Ready`
+  rather than waiting on that process directly — the sandbox reaches
+  `Phase: Ready` well before the backgrounded `create` invocation itself
+  finishes, by design (see `docs/dev/csb-bootc-deployment-design.md`
+  Finding L). This is the same behavior on Lima as on bare QEMU, not
   something Lima introduces.
 
 Verify from inside the guest:
 
 ```bash
 limactl shell tank-os -- sudo -u openclaw \
-  env XDG_RUNTIME_DIR=/run/user/1000 openshell sandbox get tankos-openclaw
+  env XDG_RUNTIME_DIR=/run/user/1000 openshell sandbox get tank-csb
 ```
 
 ## Give OpenClaw a model provider key
@@ -462,7 +469,7 @@ routable IP):
 
 ```bash
 printf '%s' "$ANTHROPIC_API_KEY" | ssh openclaw@<host> "podman secret create anthropic_api_key -"
-ssh openclaw@<host> "tank-openclaw-secrets && systemctl --user restart openclaw.service"
+ssh openclaw@<host> "systemctl --user restart openclaw.service"
 ```
 
 See [model-providers.md](model-providers.md) for the full list of supported

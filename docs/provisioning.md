@@ -266,8 +266,15 @@ a runtime session ready for a non-interactive SSH command.
 Apply the secret and restart the service the same way:
 
 ```bash
-ssh openclaw@<host> "tank-openclaw-secrets && systemctl --user restart openclaw.service"
+ssh openclaw@<host> "systemctl --user restart openclaw.service"
 ```
+
+Restarting is enough on its own for OpenClaw's own secrets (gateway token,
+model-provider keys) — `bootstrap-csb-sandbox` (the `ExecStart` of
+`openclaw.service`) reads whichever Podman secrets exist directly on every
+restart; there is no separate Quadlet-drop-in-sync step for these anymore.
+`tank-openclaw-secrets` (see "Applying Secrets" below) is only needed for
+service-gator's own secrets.
 
 Avoid typing the raw secret value directly into a command (it lands in shell
 history); export it from a password manager or prompt for it with `read -s`
@@ -275,16 +282,25 @@ instead.
 
 ### Gateway Token Setup
 
-Execute the following commands to create the Openclaw Gateway Token:
+`bootstrap-csb-sandbox` (the `ExecStart` of `openclaw.service`)
+auto-provisions the `openclaw_gateway_token` Podman secret itself on first
+start if it doesn't already exist, mirroring the old self-service UX — most
+deployments don't need to do anything here.
+
+To set your own value instead (e.g. before first boot, or to pin a
+specific token), create the secret before `openclaw.service` first runs:
 
 ```bash
 sudo -iu openclaw
 printf '%s' "$OPENCLAW_GATEWAY_TOKEN" | podman secret create openclaw_gateway_token -
-tank-openclaw-secrets
 systemctl --user restart openclaw.service
 ```
 
-The `openclaw_gateway_token` Podman secret is injected into the OpenClaw container as `OPENCLAW_GATEWAY_TOKEN`, which satisfies gateway token auth without storing the token in `openclaw.json`.
+The secret is passed into the `tank-csb` sandbox via `openshell sandbox
+create --upload` plus a shell wrapper that exports it and removes the
+uploaded file before CSB's entrypoint runs — never as a literal CLI
+argument or a value written into `openclaw.json`. See
+`docs/dev/csb-bootc-deployment-design.md` Finding K for the full mechanism.
 
 ### API Key Setup
 
@@ -296,16 +312,36 @@ printf '%s' "$ANTHROPIC_API_KEY" | podman secret create anthropic_api_key -
 printf '%s' "$OPENAI_API_KEY" | podman secret create openai_api_key -
 ```
 
-### Applying Secrets
-
-Sync the generated Quadlet drop-ins and OpenClaw SecretRefs:
+Execute the following commands to create secrets for xAI, Mistral, and
+Cohere keys (all optional — CSB only reads whichever of these exist):
 
 ```bash
-tank-openclaw-secrets
+sudo -iu openclaw
+printf '%s' "$XAI_API_KEY" | podman secret create xai_api_key -
+printf '%s' "$MISTRAL_API_KEY" | podman secret create mistral_api_key -
+printf '%s' "$COHERE_API_KEY" | podman secret create cohere_api_key -
+```
+
+### Applying Secrets
+
+For OpenClaw's own secrets (gateway token and the model-provider keys
+above), a plain restart is enough — `bootstrap-csb-sandbox` reads whichever
+Podman secrets exist directly on every start, so there is no separate sync
+step:
+
+```bash
 systemctl --user restart openclaw.service
 ```
 
-The helper only writes references. It does not copy secret values into `openclaw.json`.
+`tank-openclaw-secrets` (`sync-podman-secrets`) is a separate helper scoped
+to **service-gator's** secrets only (`gh_token`, `gitlab_token`,
+`forgejo_token`, `jira_api_token`) — it writes that container's Quadlet
+secret drop-in and no longer touches OpenClaw's own config or secrets:
+
+```bash
+tank-openclaw-secrets
+systemctl --user restart service-gator.service
+```
 
 Do not create these secrets as root unless you intentionally switch to a rootful Podman runtime.
 

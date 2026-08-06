@@ -24,6 +24,19 @@ implementation planning (`writing-plans` skill or equivalent) — this doc
 is meant to be self-contained enough that the next session doesn't need
 this conversation's history.
 
+**Implementation status (2026-08-05): code complete, docs synced.** Tasks
+1–5 of `docs/superpowers/plans/2026-08-05-csb-bootc-implementation.md`
+are done on the `feature/csb-bootc-implementation` branch:
+`bootstrap-csb-sandbox`, the `openclaw.service`/`openclaw-healthcheck.
+{service,timer}` unit set, a narrowed `sync-podman-secrets`, the cleaned-up
+`bootc/Containerfile`/`Makefile`, and this documentation pass all landed
+in that branch's commit history (not yet opened as a PR at time of
+writing — will merge as whatever PR number GitHub assigns when it's
+opened, following on from the already-merged Phase 0 spike pull requests
+numbered #39, #40, #42, and #43, referenced throughout the findings
+below). Task 6 (end-to-end verification on a real VM) remains
+outstanding.
+
 ## Summary
 
 [redhat-et/openclaw-csb](https://github.com/redhat-et/openclaw-csb) (the
@@ -535,7 +548,7 @@ script already relies on for every start).
 | **CSB image** (`quay.io/redhat-et/openclaw:csb-*`) | The actual OpenClaw+OpenShell integration — policy, entrypoint, config generation (`configure-openclaw.mjs`). Consumed as-is; not modified by tank-os. | `ghcr.io/openclaw/openclaw`, tank-os's own derived `tank-claw-openshell` image (`bootc/openclaw-openshell/`), and the separately-pinned OpenShell sandbox image. |
 | **OpenShell** (already installed on the tank-os host via RPM, per `docs/openshell.md`) | Sandbox creation/lifecycle, `provider`-based credential resolution, `forward`/`service expose` for dashboard reachability. | Already present in tank-os; role expands from "tool-call sandbox only" to "hosts the CSB sandbox that runs OpenClaw itself." |
 | **A new tank-os boot-time bootstrap script** | A non-interactive port of what `scripts/openclaw-csb create` does interactively: registers OpenShell providers from tank-os's existing Podman-secret store (see `docs/provisioning.md`'s Podman Secrets section, including the host-SSH-pipe method added earlier in this effort), creates the CSB sandbox fresh on every boot (mirroring tank-os's existing recreate-on-boot pattern for its current tool-call sandbox — no dependency on OpenShell's `StartupResume`), and starts the dashboard forward bound to the VM guest's own loopback `18789` (Finding E). | `bootstrap-openshell-sandbox`, most of `sync-podman-secrets`, and the `openclaw.container` Quadlet's direct image reference. |
-| **A rewritten Quadlet/systemd unit** | Runs the bootstrap script's sandbox-create invocation with the gateway command in the foreground (not backgrounded via `nohup`, unlike the reference scripts in Finding C), so systemd's `Restart=on-failure` supervises the real process, not a detached child. | `openclaw.container`. |
+| **A rewritten Quadlet/systemd unit** | **As implemented, not as originally assumed here — see Finding L.** The `sandbox create` CLI process is not the real supervised workload (killing it leaves the sandbox and its gateway running untouched), so the unit is a `Type=oneshot, RemainAfterExit=yes` that backgrounds `sandbox create`, polls for `Ready`, then exits, with a separate `openclaw-healthcheck.timer` (30s interval) doing the actual crash/hang detection via `systemctl --user restart openclaw.service` — not systemd's built-in process supervision of a foreground `Restart=on-failure` process as this row originally assumed. | `openclaw.container`. |
 | **Podman secrets for whatever CSB itself doesn't route through a provider** (gateway token, and any model keys CSB handles via `read_secret()` rather than a provider) | Matches CSB's own current mixed state (Finding G) — tank-os doesn't need to be purer than CSB is today. | `sync-podman-secrets`'s existing env-injection Quadlet drop-in generation, narrowed in scope. |
 | **service-gator** | Retire for GitHub (confirmed, Finding I) and Forgejo (confirmed, Finding J). GitLab is *inferred* to behave the same as GitHub — same built-in provider type — but was never independently hands-on tested; treat it as likely-but-unverified, not confirmed. Keep it (or verify Jira the same way first) for Jira, which remains untested. Findings I/J give hands-on-verified evidence that OpenShell's `github` provider, and a hand-authored `generic` provider for Forgejo, cover the same scoped-credential need natively (tighter credential+policy bundling than service-gator's separate MCP-server/file-secret split, though `generic` needs materially more manual policy setup). | Removed for GitHub/Forgejo; likely removable for GitLab pending independent verification; kept pending for Jira. See Finding I / Finding J / Open Question 2. |
 

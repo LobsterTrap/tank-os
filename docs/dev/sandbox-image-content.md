@@ -1,21 +1,33 @@
 # Discussion: what should the OpenShell sandbox image contain?
 
-Status: open discussion, not a decision. No action items yet — this is meant
-to seed a conversation before we commit to a direction.
+Status: **largely superseded by the CSB pivot.** tank-os no longer builds
+or pins its own OpenShell sandbox image — the sandbox (`tank-csb`) now runs
+[redhat-et/openclaw-csb](https://github.com/redhat-et/openclaw-csb)'s own
+published image (`quay.io/redhat-et/openclaw:csb-<tag>`), consumed as-is
+(see `docs/dev/csb-bootc-deployment-design.md`'s Component Roles table).
+Sandbox *content* is now CSB's decision, not tank-os's. Kept below as
+historical record of the research done while tank-os still built its own
+sandbox image, and because some of the findings (network-policy design,
+the `binaries` allow-list requirement, agent-CLI bundling rationale) still
+inform how tank-os thinks about a sandbox it doesn't control the content
+of. No action items remain open here for tank-os itself.
 
-## Background
+## Background (historical — describes tank-os's pre-CSB sandbox image)
 
-tank-os runs OpenClaw's tool calls inside an OpenShell sandbox container
-(see `docs/openshell.md` for the architecture). That sandbox is built from
-`ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw`, a
-Hummingbird-based rebase of NVIDIA's own Ubuntu-based community sandbox
-image, pinned by digest in
-`bootc/rootfs/usr/libexec/tank-os/bootstrap-openshell-sandbox`.
+Before the CSB pivot, tank-os ran OpenClaw's tool calls inside a
+tank-os-pinned OpenShell sandbox container that OpenClaw itself, running
+unsandboxed, reached over SSH (see `docs/openshell.md`'s current
+one-sandbox architecture for how this changed). That sandbox was built
+from `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw`,
+a Hummingbird-based rebase of NVIDIA's own Ubuntu-based community sandbox
+image, pinned by digest in the now-retired
+`bootstrap-openshell-sandbox` script.
 
-We've never written down *why* that image contains what it contains, or
-what it should contain going forward. This doc collects what we found
-looking at the upstream image it's derived from, plus a few open questions
-worth resolving as a group rather than unilaterally.
+We never wrote down *why* that image contained what it contained, or what
+it should contain going forward, before the pivot made the question moot
+for tank-os. This doc collects what was found looking at the upstream
+image it was derived from, plus the open questions that were never
+resolved before CSB replaced the whole approach.
 
 ## Finding 1: the sandbox image is currently stale, and the fix isn't local
 
@@ -164,37 +176,52 @@ our actual workloads needs them) is small enough to actually apply the
 same pin-and-scan discipline to (e.g. with `grype`, itself a Hummingbird
 image).
 
-## Finding 5: sandbox selection is static in tank-os, by design
+## Finding 5: sandbox selection is static, by design (still true post-CSB)
 
-`plugins.entries.openshell.config.from` in OpenClaw's config
-(`bootstrap-openclaw`) is documented to accept only a bare sandbox *name*,
+Historically: `plugins.entries.openshell.config.from` in OpenClaw's config
+(`bootstrap-openclaw`) was documented to accept only a bare sandbox *name*,
 not a full image reference. NVIDIA's community flavors (`base`, `droid`,
 `gemini`, `nvidia-gpu`, `ollama`, `pi`, `sdg`) are meant to be selected this
 way, resolved against `ghcr.io/nvidia/openshell-community/sandboxes/{name}`.
+tank-os's old sandbox was a custom image referenced by full digest, which
+`from` couldn't express directly — `bootstrap-openshell-sandbox` worked
+around this by pre-creating exactly one sandbox, under the fixed name
+`tankos-openclaw`, from the pinned digest, before OpenClaw's gateway
+started.
 
-tank-os's sandbox is a custom image referenced by full digest, which `from`
-can't express directly. The workaround:
-`bootstrap-openshell-sandbox` pre-creates exactly one sandbox, under the
-fixed name `tankos-openclaw`, from the pinned digest, *before* OpenClaw's
-gateway starts. `from: "tankos-openclaw"` then just means "the one sandbox
-that already exists," resolved via `sandbox get`, never `sandbox create`.
+Post-CSB, the conclusion (one fixed sandbox name) is unchanged, but the
+reason is different: CSB's own image runs with no OpenClaw-side
+`openshell` plugin config at all (see `docs/openshell.md`'s one-sandbox
+model), so there's no `from:` indirection to work around anymore.
+`bootstrap-csb-sandbox` simply deletes and recreates one sandbox, always
+named `tank-csb`, on every start via a fixed `--name tank-csb` argument to
+`openshell sandbox create`.
 
 There is currently no mechanism in this repo for offering more than one
 sandbox flavor per deployment. Supporting that would mean extending
-`bootstrap-openshell-sandbox` to pre-create multiple named sandboxes and
-deciding, per-agent-config, which name to reference — new design work, not
+`bootstrap-csb-sandbox` to pre-create multiple named sandboxes and
+deciding, per-deployment, which name to reference — new design work, not
 something OpenShell provides out of the box.
 
-## Related, smaller finding: `OPENSHELL_VERSION` duplication
+## Related finding: `OPENSHELL_VERSION` duplication — resolved by the CSB pivot
 
-Not sandbox-image-specific, but adjacent: `OPENSHELL_VERSION=0.0.92` is
-independently hardcoded in both `bootc/Containerfile` (host RPMs) and
-`bootc/openclaw-openshell/Containerfile` (CLI binary in the OpenClaw
-container), with no shared source of truth. Nothing enforces they stay in
-sync. Worth hoisting into the `Makefile` as a single build-arg source
-regardless of what we decide about sandbox content.
+Not sandbox-image-specific, but adjacent: `OPENSHELL_VERSION=0.0.92` used
+to be independently hardcoded in both `bootc/Containerfile` (host RPMs)
+and `bootc/openclaw-openshell/Containerfile` (CLI binary in the retired
+OpenClaw container), with no shared source of truth. That second
+Containerfile is gone (retired along with the rest of tank-os's own
+derived image), so this specific duplication no longer exists —
+`OPENSHELL_VERSION` now only needs to stay correct in `bootc/Containerfile`
+itself.
 
-## Questions for the team
+## Questions for the team (moot for tank-os post-CSB; kept for historical context)
+
+These were open questions about *tank-os's own* sandbox image content.
+Since tank-os no longer builds or pins a sandbox image (Status above),
+questions 1–4 are now CSB's decision, not tank-os's, and are not being
+tracked here going forward. Question 5 is effectively answered by
+Finding 5's update above (still one fixed name, `tank-csb`, for a
+different reason than before).
 
 1. Do we fork/rebuild the sandbox image against the daily-refreshed
    `quay.io/organization/hummingbird` component images, or push for a

@@ -5,6 +5,24 @@ It delegates into the running OpenClaw container, so users do not need to instal
 a separate Node.js/OpenClaw CLI on the host and do not need to open an
 interactive shell inside the container for normal operations.
 
+**Known gap since the CSB migration:** the wrapper's default target,
+`OPENCLAW_CONTAINER=openclaw`, assumes a container literally named
+`openclaw` — a leftover from before OpenClaw ran inside the `tank-csb`
+OpenShell sandbox (see `docs/openshell.md`). No container by that exact
+name exists anymore; the sandbox's underlying Podman container has a
+generated name instead (`openshell-default--tank-csb-<hash>`, find it with
+`podman ps`). Until the wrapper is updated to know about `tank-csb`
+natively, either:
+
+- point it at the real container explicitly, once per session:
+  `export OPENCLAW_CONTAINER=openshell-default--tank-csb-<hash>` (or pass
+  `--container openshell-default--tank-csb-<hash>` per invocation), or
+- skip the wrapper and go through OpenShell directly:
+  `openshell sandbox exec -n tank-csb --no-tty -- openclaw doctor`.
+
+The rest of this page's examples assume one of those two fixes has already
+been applied.
+
 For the default instance:
 
 ```bash
@@ -56,29 +74,24 @@ printed token works as-is here since both sides already say `18789`.
 
 **If that SSH command is killed outright** (`zsh: killed ssh -L
 18789:127.0.0.1:18789 ...`, no further error) — some corporate security
-tooling terminates local port-forwards to this specific port. Work around it
-by moving the Gateway's own listening port instead of the tunnel's local
-side, so `18789` never appears as the tunnel's remote target:
+tooling terminates local port-forwards to this specific port.
 
-1. On the VM, edit the Quadlet's `--port` argument in
-   `/etc/containers/systemd/users/1000/openclaw.container` (`Exec=node
-   dist/index.js gateway --allow-unconfigured --bind lan --port 18789` →
-   `--port 28789`, or any other free port).
-2. `systemctl --user daemon-reload && systemctl --user restart openclaw.service`
-3. Tunnel with the ports swapped from the blocked command — local `18789`,
-   remote `28789`:
-   ```bash
-   ssh -L 18789:127.0.0.1:28789 openclaw@<vm-ip>
-   ```
-4. Open `http://127.0.0.1:18789/` as before. Keeping the *local* side at
-   `18789` means `controlUi.allowedOrigins` (which lists
-   `http://127.0.0.1:18789`/`http://localhost:18789` by default) doesn't
-   need editing — only the origin your browser presents matters, not the
-   VM-side port behind the tunnel.
-
-This resets on VM recreation (`bootstrap-openclaw` only sets the default
-port/origins on first boot) — redo it if you rebuild the VM and hit the same
-block.
+The previous workaround for this (editing the OpenClaw Quadlet's `--port`
+argument) no longer applies: OpenClaw does not run as a Podman Quadlet
+anymore, and there is no `openclaw.container` file on the VM to edit. The
+guest-loopback `18789` binding now comes from `openclaw.service`'s
+`ExecStartPost=` line (`openshell forward start 18789 tank-csb
+--background`, see `docs/openshell.md`), and `openshell forward` requires
+the host-side bind port and the sandbox-internal target port to be the
+*same* number (see `docs/dev/csb-bootc-deployment-design.md` Open
+Question 6) — so remapping away from `18789` end to end would also
+require changing the port CSB's own `openclaw gateway` process listens on
+inside the sandbox, which is not yet a documented or verified tank-os
+capability. The other candidate fallback, `openshell service expose`, was
+found to require a browser client certificate that OpenShell doesn't yet
+provide a way to obtain, so it isn't a usable substitute either (same Open
+Question 6). Treat this as an open gap if your network blocks
+port-forwards to `18789` specifically, not a solved workaround today.
 
 The wrapper targets the `openclaw` container by default. To target another
 container, either use `--container`:
@@ -94,28 +107,32 @@ export OPENCLAW_CONTAINER=openclaw-research
 openclaw doctor
 ```
 
-For low-level debugging, use Podman directly:
+For low-level debugging, use OpenShell or Podman directly against the
+actual sandbox container (see the known-gap note above for how to find its
+name):
 
 ```bash
-podman exec -it openclaw sh
-podman logs -f openclaw
+openshell sandbox exec -n tank-csb --no-tty -- sh
+podman exec -it openshell-default--tank-csb-<hash> sh
+podman logs -f openshell-default--tank-csb-<hash>
 ```
 
-The Podman shell path is an escape hatch, not the main UX.
+This is an escape hatch, not the main UX.
 
 ## Single Instance And Multiple Instances
 
-The bootc image ships one default rootless Quadlet:
+The bootc image ships one default OpenShell sandbox and the systemd unit
+that (re)creates it:
 
 ```text
-/etc/containers/systemd/users/1000/openclaw.container
+/usr/lib/systemd/user/openclaw.service   # creates/recreates the sandbox
 ```
 
 That keeps first boot predictable and gives the machine one obvious gateway,
-state directory, and service name:
+sandbox, and service name:
 
 ```text
-~/.openclaw
+tank-csb
 openclaw.service
 openclaw
 ```
@@ -123,13 +140,16 @@ openclaw
 Multiple instances are still possible, but they should be explicit. A local
 multi-instance shape should follow the installer model:
 
-- unique container names, for example `openclaw-<prefix>-<name>`
+- unique sandbox names, for example `tank-csb-<name>` (passed to `openshell
+  sandbox create --name`)
 - unique user services, for example `openclaw-<prefix>-<name>.service`
-- unique data directories or volumes
-- unique host ports for gateway and bridge
-- per-instance env/config describing image, ports, secrets, and token
+- unique data/secret scoping per sandbox
+- unique host-side forwarded ports (`openshell forward start <port>
+  <sandbox>`)
+- per-instance env/config describing image, providers, and secrets
 
 For tank-os, the likely next step is to add an installer-style `tank-openclaw`
-instance manager that writes per-instance Quadlets and SecretRef config. Until
-then, the image intentionally starts one default gateway and the wrapper can
-target additional manually-created containers by name.
+instance manager that writes per-instance systemd units and sandbox
+definitions. Until then, the image intentionally starts one default sandbox
+and the wrapper can target additional manually-created containers by name
+(see the known-gap note above on setting `--container`/`OPENCLAW_CONTAINER`).
