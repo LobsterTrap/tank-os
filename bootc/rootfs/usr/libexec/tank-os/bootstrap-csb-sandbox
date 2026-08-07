@@ -7,7 +7,7 @@ set -euo pipefail
 # systemd --user unit, not a Podman Quadlet -- CSB's own image is run via
 # `openshell sandbox create`, not `podman run` directly).
 #
-# Five jobs, all idempotent except the sandbox itself (recreated fresh on
+# Six jobs, all idempotent except the sandbox itself (recreated fresh on
 # every start -- Open Question 7's "no dependency on StartupResume"):
 #   1. Register the local gateway with the CLI, if it isn't already --
 #      required once per boot before any other `openshell` command below can
@@ -24,6 +24,11 @@ set -euo pipefail
 #      `openshell sandbox create` in the background and poll until the
 #      sandbox reports Ready (Finding L: the CLI's foreground attachment is
 #      cosmetic, not the supervised workload -- see step 7 below).
+#   6. (Runs between jobs 3 and 4 in the code, as step "4b" -- out of
+#      numeric sequence because it was added after the rest of this list
+#      was written) Mount a persistent Podman volume into the sandbox and
+#      point OpenClaw's state/workspace/model-catalog config at it, so
+#      that config survives job 5's recreation cycle.
 #
 # The sandbox's own overlay filesystem does NOT survive step 5's
 # delete/create cycle -- confirmed empirically, not just inferred: OpenClaw's
@@ -181,7 +186,13 @@ sandbox_env_args=(
 # OPENCLAW_PROVIDERS seeds the catalog declaratively on every sandbox
 # creation, so this gap can't reappear after a volume reset or fresh
 # install the way a one-off `openclaw config patch` would.
-if [[ "$openai_provider_attached" == true ]]; then
+#
+# Only seed the openai catalog when default_model actually names an openai
+# model -- openai_provider_attached and default_model are independent
+# signals (one from a secret's presence, the other from a build/runtime
+# override), so a future non-openai default with the openai secret still
+# present must not silently register a bogus id/name pair here.
+if [[ "$openai_provider_attached" == true && "$default_model" == openai/* ]]; then
   openai_model_id="${default_model#openai/}"
   openclaw_providers_json="$(printf '{"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1","models":[{"id":"%s","name":"%s"}]}}' \
     "$openai_model_id" "$openai_model_id")"
