@@ -24,13 +24,27 @@ set -euo pipefail
 #      `openshell sandbox create` in the background and poll until the
 #      sandbox reports Ready (Finding L: the CLI's foreground attachment is
 #      cosmetic, not the supervised workload -- see step 7 below).
+#
+# The sandbox's own overlay filesystem does NOT survive step 5's
+# delete/create cycle -- confirmed empirically, not just inferred: OpenClaw's
+# config/session state under ~/.openclaw reverted to image defaults after a
+# routine restart. Step 4b mounts a persistent Podman volume (the
+# openclaw-csb demo runbook's own pattern) and points OpenClaw's state/
+# workspace dirs at it so that state survives independently of the sandbox
+# instance's lifecycle.
 
 csb_image="${CSB_IMAGE_TAG:-__CSB_IMAGE_TAG_DEFAULT__}"
 sandbox_name="tank-csb"
 upload_dir="/dev/shm/tank-os-csb-upload"
+persist_volume="tank-openclaw-data"
+persist_mount_target="/sandbox/persist"
 
 secret_exists() {
   podman secret inspect "$1" >/dev/null 2>&1
+}
+
+volume_exists() {
+  podman volume inspect "$1" >/dev/null 2>&1
 }
 
 # --- 1. Register the local gateway with the CLI ----------------------------
@@ -116,8 +130,63 @@ register_provider openai-claw openai OPENAI_API_KEY openai_api_key
 register_provider github-claw github GH_TOKEN gh_token
 
 provider_args=()
-openshell provider get openai-claw >/dev/null 2>&1 && provider_args+=(--provider openai-claw)
+openai_provider_attached=false
+if openshell provider get openai-claw >/dev/null 2>&1; then
+  provider_args+=(--provider openai-claw)
+  openai_provider_attached=true
+fi
 openshell provider get github-claw >/dev/null 2>&1 && provider_args+=(--provider github-claw)
+
+# --- 4b. Persistent state volume (openclaw-csb demo-runbook pattern) -------
+#
+# --driver-config-json passes a raw podman mount spec through to the
+# sandbox's container, attaching a named Podman volume that outlives
+# `openshell sandbox delete` the same way any podman volume outlives
+# `podman rm` of a container that used it. Redirecting
+# OPENCLAW_STATE_DIR/OPENCLAW_WORKSPACE_DIR onto that mount moves
+# OpenClaw's config, session/auth store, and workspace off the ephemeral
+# sandbox overlay and onto durable storage.
+if ! volume_exists "$persist_volume"; then
+  podman volume create "$persist_volume" >/dev/null
+  # Fresh volumes are root-owned; the sandbox runs as the unprivileged
+  # `sandbox` user (policy's process.run_as_user), so it needs a writable
+  # mount from the start. One-time fix -- not repeated once the volume
+  # already exists, so this doesn't cost an extra container run on every
+  # restart.
+  podman run --rm --user 0 --entrypoint /bin/sh \
+    -v "${persist_volume}:/data" \
+    "$csb_image" \
+    -c 'chmod 0777 /data'
+fi
+
+driver_config_json="$(printf '{"podman":{"mounts":[{"type":"volume","source":"%s","target":"%s","read_only":false}]}}' \
+  "$persist_volume" "$persist_mount_target")"
+
+# Build-time ARG (bootc/Containerfile), not hardcoded here, because this is
+# the exact failure mode this value caused: the upstream openclaw-csb demo
+# runbook pins a model name OpenAI no longer serves. Re-pinning should be a
+# build-arg bump, not a script edit.
+default_model="${OPENCLAW_DEFAULT_MODEL:-__OPENCLAW_DEFAULT_MODEL_DEFAULT__}"
+
+sandbox_env_args=(
+  --env "OPENCLAW_STATE_DIR=${persist_mount_target}/.openclaw"
+  --env "OPENCLAW_WORKSPACE_DIR=${persist_mount_target}/workspace"
+  --env "OPENCLAW_DEFAULT_MODEL=${default_model}"
+)
+
+# OpenClaw's models.providers.<name>.models[] catalog has no entry for a
+# model unless something puts one there -- discovered the hard way when
+# `openclaw models set` alone produced "Unknown model" at runtime, because
+# it only updates agents.defaults.models, a separate schema location.
+# OPENCLAW_PROVIDERS seeds the catalog declaratively on every sandbox
+# creation, so this gap can't reappear after a volume reset or fresh
+# install the way a one-off `openclaw config patch` would.
+if [[ "$openai_provider_attached" == true ]]; then
+  openai_model_id="${default_model#openai/}"
+  openclaw_providers_json="$(printf '{"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1","models":[{"id":"%s","name":"%s"}]}}' \
+    "$openai_model_id" "$openai_model_id")"
+  sandbox_env_args+=(--env "OPENCLAW_PROVIDERS=${openclaw_providers_json}")
+fi
 
 # --- 5. Stage non-provider-routed secrets for --upload (Finding K) ---------
 
@@ -190,6 +259,8 @@ timeout 600 openshell sandbox create \
   --name "$sandbox_name" \
   "${provider_args[@]}" \
   "${upload_args[@]}" \
+  --driver-config-json "$driver_config_json" \
+  "${sandbox_env_args[@]}" \
   --no-tty \
   -- sh -c "$wrapper" >/dev/null 2>&1 &
 create_pid=$!
