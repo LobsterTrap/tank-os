@@ -188,16 +188,8 @@ sandbox_env_args=(
 # OPENCLAW_PROVIDERS seeds the catalog declaratively on every sandbox
 # creation, so this gap can't reappear after a volume reset or fresh
 # install the way a one-off `openclaw config patch` would.
-#
-# Only seed the openai catalog when default_model actually names an openai
-# model -- openai_provider_attached and default_model are independent
-# signals (one from a secret's presence, the other from a build/runtime
-# override), so a future non-openai default with the openai secret still
-# present must not silently register a bogus id/name pair here.
-if [[ "$openai_provider_attached" == true && "$default_model" == openai/* ]]; then
-  openai_model_id="${default_model#openai/}"
-  openclaw_providers_json="$(printf '{"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1","models":[{"id":"%s","name":"%s"}]}}' \
-    "$openai_model_id" "$openai_model_id")"
+if [[ "$openai_provider_attached" == true ]]; then
+  openclaw_providers_json='{"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1","models":[{"id":"gpt-5.6-luna","name":"gpt-5.6-luna"},{"id":"gpt-5.6-terra","name":"gpt-5.6-terra"},{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"},{"id":"gpt-5.5-pro","name":"gpt-5.5-pro"}]}}'
   sandbox_env_args+=(--env "OPENCLAW_PROVIDERS=${openclaw_providers_json}")
 fi
 
