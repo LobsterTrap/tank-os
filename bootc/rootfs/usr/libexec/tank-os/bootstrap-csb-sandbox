@@ -177,6 +177,7 @@ sandbox_env_args=(
   --env "OPENCLAW_STATE_DIR=${persist_mount_target}/.openclaw"
   --env "OPENCLAW_WORKSPACE_DIR=${persist_mount_target}/workspace"
   --env "OPENCLAW_DEFAULT_MODEL=${default_model}"
+  --env "SQLITE_TMPDIR=/tmp"
 )
 
 # OpenClaw's models.providers.<name>.models[] catalog has no entry for a
