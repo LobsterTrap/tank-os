@@ -24,7 +24,7 @@ ARG CSB_IMAGE_TAG=quay.io/redhat-et/openclaw:csb-arm64-openclaw-v2026.7.2-beta.7
 # runbook's own pinned value (openai/gpt-5.5) turned out to no longer be a
 # model OpenAI serves; re-pinning here should be a build-arg bump, not a
 # bootstrap-csb-sandbox edit.
-ARG OPENCLAW_DEFAULT_MODEL=openai/gpt-5.5-pro
+ARG OPENCLAW_DEFAULT_MODEL=openai/gpt-5.6-luna
 
 # OpenShell CLI + gateway RPMs, pinned to a tagged release rather than
 # `latest` for reproducible builds.
