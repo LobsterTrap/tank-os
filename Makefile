@@ -8,7 +8,7 @@ FEDORA_BOOTC_BASE ?=
 # Pinned, date-stamped CSB tag -- see
 # docs/dev/csb-bootc-deployment-design.md Open Question 1. CSB rebuilds
 # daily; do not default this to a moving tag like csb-latest.
-CSB_IMAGE_TAG ?= quay.io/redhat-et/openclaw:csb-2026.07.21
+CSB_IMAGE_TAG ?= quay.io/redhat-et/openclaw:csb-arm64-openclaw-v2026.7.2-beta.7
 # Single point of control for the OpenShell RPMs bootc/Containerfile
 # installs on the host -- its own ARG default exists only for standalone
 # builds run without this Makefile, and must be bumped together with

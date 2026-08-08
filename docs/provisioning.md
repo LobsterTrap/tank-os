@@ -43,7 +43,7 @@ and multi-instance notes.
 
 CSB's own image (`quay.io/redhat-et/openclaw:csb-<tag>`, pinned by the
 `CSB_IMAGE_TAG` build arg in `bootc/Containerfile` — the current default is
-`quay.io/redhat-et/openclaw:csb-2026.07.21`) is pulled as part of `openshell
+`quay.io/redhat-et/openclaw:csb-arm64-openclaw-v2026.7.2-beta.7`) is pulled as part of `openshell
 sandbox create --from`, which runs as `openclaw.service`'s `ExecStart` on
 every boot. There is no separate `podman pull` step in this flow the way
 there was for the old OpenClaw Quadlet — `openshell` manages the fetch
@@ -57,7 +57,7 @@ a no-op:
 ```bash
 ssh openclaw@<host>
 sudo -iu openclaw
-podman pull quay.io/redhat-et/openclaw:csb-2026.07.21
+podman pull quay.io/redhat-et/openclaw:csb-arm64-openclaw-v2026.7.2-beta.7
 systemctl --user restart openclaw.service
 ```
 
