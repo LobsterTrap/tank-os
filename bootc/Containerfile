@@ -18,7 +18,7 @@ ARG OPENCLAW_SUBID_COUNT=65536
 # Pinned, date-stamped CSB tag -- see
 # docs/dev/csb-bootc-deployment-design.md Open Question 1. CSB rebuilds
 # daily; do not use csb-latest here.
-ARG CSB_IMAGE_TAG=quay.io/redhat-et/openclaw:csb-2026.07.21
+ARG CSB_IMAGE_TAG=quay.io/redhat-et/openclaw:csb-arm64-openclaw-v2026.7.2-beta.7
 
 # Default model for a fresh OpenClaw config. The upstream openclaw-csb demo
 # runbook's own pinned value (openai/gpt-5.5) turned out to no longer be a
