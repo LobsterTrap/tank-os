@@ -30,6 +30,16 @@ ARG OPENCLAW_DEFAULT_MODEL=openai/gpt-5.6-luna
 # `latest` for reproducible builds.
 ARG OPENSHELL_VERSION=0.0.99
 
+# llmman (https://github.com/llmmanorg/llmman) serves local models as an
+# Ollama/OpenAI/Anthropic-compatible endpoint, with the models themselves
+# stored and distributed as plain OCI artifacts -- the same registries,
+# mirrors, signing and retention story bootc already tells for the OS
+# image. Deliberately NOT pinned, unlike OpenShell above: every llmman
+# commit that passes CI is a release, there is no stable channel, and we
+# want each tank-os build to pick up the current one. Its download is
+# still verified against the release's own checksums.txt.
+ARG LLMMAN_REPO=llmmanorg/llmman
+
 RUN set -eux; \
     dnf -y install \
       cloud-init \
@@ -51,6 +61,17 @@ RUN set -eux; \
     (cd /tmp && grep -E " (${openshell_rpm}|${openshell_gateway_rpm})\$" openshell-checksums-sha256.txt | sha256sum -c -); \
     dnf -y install "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}"; \
     rm -f "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}" /tmp/openshell-checksums-sha256.txt; \
+    llmman_tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${LLMMAN_REPO}/releases/latest")"; \
+    llmman_tag="${llmman_tag##*/}"; \
+    test -n "${llmman_tag}"; \
+    llmman_base_url="https://github.com/${LLMMAN_REPO}/releases/download/${llmman_tag}"; \
+    llmman_asset="llmman-${arch}-unknown-linux-gnu"; \
+    curl -fsSL -o "/tmp/${llmman_asset}" "${llmman_base_url}/${llmman_asset}"; \
+    curl -fsSL -o /tmp/llmman-checksums.txt "${llmman_base_url}/checksums.txt"; \
+    (cd /tmp && grep -E " ${llmman_asset}\$" llmman-checksums.txt | sha256sum -c -); \
+    install -m 0755 "/tmp/${llmman_asset}" /usr/bin/llmman; \
+    rm -f "/tmp/${llmman_asset}" /tmp/llmman-checksums.txt; \
+    /usr/bin/llmman --version; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*; \
     getent group openclaw >/dev/null || groupadd -g "${OPENCLAW_GID}" openclaw; \
@@ -95,6 +116,8 @@ RUN set -eux; \
       /etc/systemd/user/default.target.wants/openshell-gateway.service; \
     ln -sf /usr/lib/systemd/user/openclaw.service \
       /etc/systemd/user/default.target.wants/openclaw.service; \
+    ln -sf /usr/lib/systemd/user/llmman.service \
+      /etc/systemd/user/default.target.wants/llmman.service; \
     mkdir -p /etc/systemd/user/timers.target.wants; \
     ln -sf /usr/lib/systemd/user/openclaw-healthcheck.timer \
       /etc/systemd/user/timers.target.wants/openclaw-healthcheck.timer; \
