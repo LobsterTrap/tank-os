@@ -83,13 +83,16 @@ runtime inside `llmman serve`, not at image build time. See
 [docs/backends.md](https://github.com/llmmanorg/llmman/blob/main/docs/backends.md)
 upstream for the `--runtime` and `LLMMAN_RUNTIME` options.
 
+For an air-gapped host, set `LLMMAN_RUNTIME=path` with your own
+`llama-server` on `PATH` (nothing is downloaded) and pre-stage models from
+your mirror with `llmman pull` or `llmman transfer`.
+
 ## Configuration
 
 System-wide settings go in `/etc/llmman/llmman.conf`; per-user settings in
 `~openclaw/.config/llmman/llmman.conf`. `llmman config set ...` edits the
 latter. Daemon-wide environment variables (`LLMMAN_HOST`,
-`LLMMAN_API_KEYS`, `LLMMAN_MODELS`, `LLMMAN_CONTEXT_LENGTH`, ...) belong in
-a drop-in:
+`LLMMAN_MODELS`, `LLMMAN_CONTEXT_LENGTH`, ...) belong in a drop-in:
 
 ```bash
 sudo -iu openclaw
@@ -102,8 +105,16 @@ systemctl --user daemon-reload
 systemctl --user restart llmman.service
 ```
 
-Binding beyond loopback (`LLMMAN_HOST=0.0.0.0`) requires `LLMMAN_API_KEYS`
-as well; `llmman serve` refuses to start otherwise. Upstream's
+Binding beyond loopback (`LLMMAN_HOST=0.0.0.0`) requires API keys, or
+`llmman serve` refuses to start. Set them with
+`llmman config set auth.api_keys <key>`, which keeps the file owner-only.
+If you use `LLMMAN_API_KEYS` in a drop-in instead, `chmod 600` that file.
+`LLMMAN_AUTH=off` skips the requirement and disables daemon-side
+authentication, so use it only behind an authenticating gateway.
+
+Keys travel with every request, so also terminate TLS in the daemon
+(`LLMMAN_TLS_CERT`, `LLMMAN_TLS_KEY` and an `https://` `LLMMAN_HOST`) or
+keep access behind an SSH tunnel or gateway. Upstream's
 [configuration.md](https://github.com/llmmanorg/llmman/blob/main/docs/configuration.md)
 documents every variable.
 
