@@ -85,7 +85,9 @@ upstream for the `--runtime` and `LLMMAN_RUNTIME` options.
 
 For an air-gapped host, set `LLMMAN_RUNTIME=path` with your own
 `llama-server` on `PATH` (nothing is downloaded) and pre-stage models from
-your mirror with `llmman pull` or `llmman transfer`.
+your mirror into the local store with `llmman pull` while the mirror is
+reachable. Use `llmman transfer` on a connected staging host to populate the
+mirror.
 
 ## Configuration
 
