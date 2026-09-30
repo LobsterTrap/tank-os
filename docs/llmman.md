@@ -21,13 +21,20 @@ anyone logging in, alongside `openshell-gateway.service` and
 
 ## Versioning
 
-Unlike the OpenShell RPMs, llmman is **not pinned** in
-`bootc/Containerfile`. Every llmman commit that passes CI is a release and
-there is no separate stable channel, so each tank-os build fetches the
-current GitHub release for the target architecture and verifies it against
-that release's own `checksums.txt`. Two tank-os images built at different
-times can therefore carry different llmman versions; `llmman --version`
-on the booted VM reports which one you have.
+llmman is pinned in `bootc/Containerfile` by release (`LLMMAN_VERSION`) and
+by repo-owned SHA-256 digests per architecture (`LLMMAN_SHA256_X86_64`,
+`LLMMAN_SHA256_AARCH64`). The build fails if the download does not match,
+so every image carries exactly the binary reviewed in the repo.
+`llmman --version` on the booted VM reports which one you have.
+
+llmman releases often, so bump periodically. Pick a release, then update
+the version and both digests together, checking them against the release's
+`checksums.txt`:
+
+```bash
+gh release view vX.Y.Z -R llmmanorg/llmman --json assets \
+  --jq '.assets[] | select(.name | endswith("linux-gnu")) | "\(.digest | ltrimstr("sha256:"))  \(.name)"'
+```
 
 ## Endpoint
 

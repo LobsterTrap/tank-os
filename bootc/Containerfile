@@ -34,11 +34,13 @@ ARG OPENSHELL_VERSION=0.0.99
 # Ollama/OpenAI/Anthropic-compatible endpoint, with the models themselves
 # stored and distributed as plain OCI artifacts -- the same registries,
 # mirrors, signing and retention story bootc already tells for the OS
-# image. Deliberately NOT pinned, unlike OpenShell above: every llmman
-# commit that passes CI is a release, there is no stable channel, and we
-# want each tank-os build to pick up the current one. Its download is
-# still verified against the release's own checksums.txt.
+# image. Pinned to a release and to repo-owned SHA-256 digests, so a build
+# can only ever install the exact binary reviewed here. To bump, update all
+# three values together (see docs/llmman.md).
 ARG LLMMAN_REPO=llmmanorg/llmman
+ARG LLMMAN_VERSION=0.1.491
+ARG LLMMAN_SHA256_X86_64=5feb2685350f6273199949d10fba852fe6f73b86eafa62fbef988a375b4b9826
+ARG LLMMAN_SHA256_AARCH64=e41b32812d7358a06dcdfcfae0907b2d8b3b10a5654e2fce50ecd0d3f15d91b1
 
 RUN set -eux; \
     dnf -y install \
@@ -61,16 +63,17 @@ RUN set -eux; \
     (cd /tmp && grep -E " (${openshell_rpm}|${openshell_gateway_rpm})\$" openshell-checksums-sha256.txt | sha256sum -c -); \
     dnf -y install "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}"; \
     rm -f "/tmp/${openshell_rpm}" "/tmp/${openshell_gateway_rpm}" /tmp/openshell-checksums-sha256.txt; \
-    llmman_tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${LLMMAN_REPO}/releases/latest")"; \
-    llmman_tag="${llmman_tag##*/}"; \
-    test -n "${llmman_tag}"; \
-    llmman_base_url="https://github.com/${LLMMAN_REPO}/releases/download/${llmman_tag}"; \
+    case "${arch}" in \
+      x86_64) llmman_sha256="${LLMMAN_SHA256_X86_64}" ;; \
+      aarch64) llmman_sha256="${LLMMAN_SHA256_AARCH64}" ;; \
+      *) echo "unsupported arch for llmman: ${arch}" >&2; exit 1 ;; \
+    esac; \
     llmman_asset="llmman-${arch}-unknown-linux-gnu"; \
-    curl -fsSL -o "/tmp/${llmman_asset}" "${llmman_base_url}/${llmman_asset}"; \
-    curl -fsSL -o /tmp/llmman-checksums.txt "${llmman_base_url}/checksums.txt"; \
-    (cd /tmp && grep -E " ${llmman_asset}\$" llmman-checksums.txt | sha256sum -c -); \
+    curl -fsSL -o "/tmp/${llmman_asset}" \
+      "https://github.com/${LLMMAN_REPO}/releases/download/v${LLMMAN_VERSION}/${llmman_asset}"; \
+    echo "${llmman_sha256}  /tmp/${llmman_asset}" | sha256sum -c -; \
     install -m 0755 "/tmp/${llmman_asset}" /usr/bin/llmman; \
-    rm -f "/tmp/${llmman_asset}" /tmp/llmman-checksums.txt; \
+    rm -f "/tmp/${llmman_asset}"; \
     /usr/bin/llmman --version; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*; \

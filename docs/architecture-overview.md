@@ -86,8 +86,8 @@ through systemd:
   directly on the VM host: `llmman serve`, a local Ollama/OpenAI/Anthropic-
   compatible inference endpoint on `127.0.0.1:17434` whose models are
   pulled and stored as OCI artifacts — see `docs/llmman.md`. The binary is
-  fetched from llmman's latest GitHub release at image build time
-  (`bootc/Containerfile`), not pinned.
+  fetched at image build time from a pinned llmman release and verified
+  against a SHA-256 digest kept in `bootc/Containerfile`.
 
 ## Part 3 — OpenClaw and OpenShell: one sandbox, not two
 
