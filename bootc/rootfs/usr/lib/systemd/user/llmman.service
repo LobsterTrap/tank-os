@@ -1,0 +1,15 @@
+[Unit]
+Description=llmman local inference daemon (models as OCI artifacts)
+Documentation=https://github.com/llmmanorg/llmman
+After=network-online.target
+
+[Service]
+# `serve` runs in the foreground and logs to stderr, so systemd owns it
+# directly. Loopback-only by default (127.0.0.1:17434); a non-loopback
+# LLMMAN_HOST requires API keys (or LLMMAN_AUTH=off), see docs/llmman.md.
+ExecStart=/usr/bin/llmman serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

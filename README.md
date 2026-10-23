@@ -44,6 +44,7 @@ or tightly scoped sudo policy for OS management and bootc updates.
 - Use the OpenClaw CLI: [docs/cli.md](docs/cli.md)
 - Configure model provider keys: [docs/model-providers.md](docs/model-providers.md)
 - Configure service-gator: [docs/service-gator.md](docs/service-gator.md)
+- Serve local models with llmman: [docs/llmman.md](docs/llmman.md)
 - Deploy per-user VMs on OpenShift Virtualization: [docs/openshift-virtualization.md](docs/openshift-virtualization.md)
 
 For bootc concepts and day-2 operations, see the upstream [bootc documentation](https://bootc-dev.github.io/bootc/).
@@ -95,4 +96,5 @@ Relevant docs in this repo:
 - `docs/cli.md`
 - `docs/model-providers.md`
 - `docs/service-gator.md`
+- `docs/llmman.md`
 ```

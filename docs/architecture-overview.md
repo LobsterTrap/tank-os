@@ -82,6 +82,12 @@ through systemd:
   installed via RPM (`bootc/Containerfile`), not built by this repo. This
   is the process with real Podman access — it's what actually creates and
   manages sandbox containers, including `tank-csb`.
+- **`llmman.service`** is a third rootless systemd *user* service running
+  directly on the VM host: `llmman serve`, a local Ollama/OpenAI/Anthropic-
+  compatible inference endpoint on `127.0.0.1:17434` whose models are
+  pulled and stored as OCI artifacts — see `docs/llmman.md`. The binary is
+  fetched at image build time from a pinned llmman release and verified
+  against a SHA-256 digest kept in `bootc/Containerfile`.
 
 ## Part 3 — OpenClaw and OpenShell: one sandbox, not two
 
@@ -177,6 +183,7 @@ section for a gap in the network-policy layer under rootless Podman
 - `docs/provisioning.md` — cloud-init, EC2, libvirt, editing OpenClaw config
 - `docs/openshell.md` — OpenShell sandboxing architecture in full detail
 - `docs/service-gator.md` — the second container, scoped external-service access
+- `docs/llmman.md` — local inference with models as OCI artifacts
 - `docs/model-providers.md` — API keys and inference provider configuration
 - `docs/cli.md` — the OpenClaw CLI and dashboard
 - `docs/dev/sandbox-image-content.md` — open discussion on sandbox image scope and content
